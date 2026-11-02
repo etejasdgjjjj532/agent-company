@@ -91,7 +91,9 @@ agent-company replay <events.jsonl>   記録の表示
 
 | 項目 | 状態 |
 |---|---|
-| Claude Code / Codex / OpenCode | Linux の実機で、Root と子の組み合わせを確認済み |
+| Claude Code / Codex / OpenCode | Linux の実機で、Root と子の組み合わせ、承認と統合まで確認済み |
+| 入れ子の委譲 (孫) | Root (Claude) → 子 (Claude) → 孫 (Codex) で、孫から子、子から Root への統合まで確認済み |
+| 複数回の会話と再開 | Root が Claude / Codex / OpenCode のどれでも、会話の文脈を引き継げることを確認済み (アプリを閉じて再開した後も) |
 | GPT 互換 API (opencode 経由) | 疑似サーバーで接続・認証・モデル指定を確認済み |
 | Gemini CLI | 実装済みですが、未認証のため実機では未確認です。公式ドキュメントには、2026 年 6 月に Antigravity CLI へ置き換えられたという注記があり、今後は対応の見直しが必要になるかもしれません |
 | Windows / macOS | CI でテストを実行しています。実機の確認はこれからです |

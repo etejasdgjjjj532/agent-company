@@ -7,7 +7,7 @@ import { Hub } from "../src/hub.ts";
 import { startWebServer } from "../src/web/server.ts";
 import { makeRepo } from "../test/helpers.ts";
 
-const [rootCli = "claude", childCli = "codex"] = process.argv.slice(2);
+const [rootCli = "claude", childCli = "codex", preset = "light", ...goalWords] = process.argv.slice(2);
 const base = mkdtempSync(join(tmpdir(), "ac-hub-e2e-"));
 const repo = join(base, "repo");
 mkdirSync(repo);
@@ -20,8 +20,8 @@ const call = async (path: string, body?: unknown) => {
   return res.json() as Promise<any>;
 };
 const started = await call("/api/session/start", {
-  repo, rootCli, childClis: [childCli], preset: "light",
-  goal: `Delegate to ONE sub-agent (cli ${childCli}) the task: create a file greeting.txt containing exactly the word hello. Wait for it, then merge its work with merge_child, and tell me the result in one line.`,
+  repo, rootCli, childClis: childCli.split(","), preset,
+  goal: goalWords.length ? goalWords.join(" ") : `Delegate to ONE sub-agent (cli ${childCli}) the task: create a file greeting.txt containing exactly the word hello. Wait for it, then merge its work with merge_child, and tell me the result in one line.`,
 });
 console.log("started", started.meta?.id ?? started);
 const id = started.meta.id;
