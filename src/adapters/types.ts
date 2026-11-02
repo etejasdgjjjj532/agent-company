@@ -22,6 +22,8 @@ export interface Invocation {
   cmd: string;
   args: string[];
   env: Record<string, string>;
+  stdin?: string;
+  cleanup?: () => void;
 }
 
 export interface Adapter {

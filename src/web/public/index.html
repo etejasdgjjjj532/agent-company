@@ -1,0 +1,46 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>agent-company</title>
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+<header>
+  <strong id="title">agent-company</strong>
+  <span id="conn" class="dot off" title="接続状態"></span>
+  <span id="summary" class="muted"></span>
+  <span class="spacer"></span>
+  <label class="muted">用語
+    <select id="terms"><option value="tech">技術用語</option><option value="company">会社メタファー</option></select>
+  </label>
+</header>
+<main>
+  <section id="graph-pane">
+    <canvas id="graph" aria-label="エージェントのグラフ"></canvas>
+    <div class="legend muted">
+      <span><i style="background:var(--c-run)"></i>実行中</span>
+      <span><i style="background:var(--c-done)"></i>完了</span>
+      <span><i style="background:var(--c-pending)"></i>待機</span>
+      <span><i style="background:var(--c-failed)"></i>失敗</span>
+      <span><i style="background:var(--c-approval)"></i>承認待ち</span>
+      <span>ドラッグで移動、ホイールで拡大縮小</span>
+    </div>
+  </section>
+  <aside>
+    <div id="approvals"></div>
+    <section class="card" id="chat">
+      <h2 id="chat-title">Root との会話</h2>
+      <div id="messages" aria-live="polite"></div>
+      <form id="chat-form">
+        <textarea id="chat-input" rows="2" placeholder="やりたいことを入力 (Enter で送信、Shift+Enter で改行)"></textarea>
+        <button type="submit">送信</button>
+      </form>
+    </section>
+    <section class="card" id="detail"><p class="muted">グラフのノードを選ぶと詳細が出ます。</p></section>
+  </aside>
+</main>
+<script src="/app.js" type="module"></script>
+</body>
+</html>

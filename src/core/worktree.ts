@@ -22,7 +22,7 @@ export function createWorktree(repoDir: string, path: string, branch: string, ba
   git(repoDir, ["worktree", "add", "-q", "-b", branch, path, base]);
   const modules = join(repoDir, "node_modules");
   if (existsSync(modules) && !existsSync(join(path, "node_modules"))) {
-    symlinkSync(modules, join(path, "node_modules"), "dir");
+    symlinkSync(modules, join(path, "node_modules"), process.platform === "win32" ? "junction" : "dir");
   }
 }
 

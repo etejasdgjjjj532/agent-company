@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -32,7 +32,8 @@ export async function startHarness(input: Partial<CharterInput> = {}, withRepo =
   const baseDir = mkdtempSync(join(tmpdir(), "ac-test-"));
   const repoDir = join(baseDir, "repo");
   const dataDir = join(baseDir, "data");
-  execFileSync("mkdir", ["-p", repoDir, dataDir]);
+  mkdirSync(repoDir, { recursive: true });
+  mkdirSync(dataDir, { recursive: true });
   if (withRepo) makeRepo(repoDir);
   const charter = buildCharter({ rootCli: "fake", childClis: ["fake"], preset: "standard", ...input });
   const bus = new EventBus();

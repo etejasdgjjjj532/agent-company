@@ -1,5 +1,4 @@
-import { execFileSync } from "node:child_process";
-import { mkdtempSync } from "node:fs";
+import { mkdirSync, mkdtempSync } from "node:fs";
 import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -15,7 +14,7 @@ const message = rest.join(" ") || `Delegate to ONE sub-agent (cli ${childCli}) t
 
 const base = mkdtempSync(join(tmpdir(), "ac-e2e-"));
 const repoDir = join(base, "repo");
-execFileSync("mkdir", ["-p", repoDir]);
+mkdirSync(repoDir, { recursive: true });
 makeRepo(repoDir);
 const charter = buildCharter({ rootCli, childClis: [childCli], preset: "light", maxChildren: 2 });
 const bus = new EventBus((e) => {

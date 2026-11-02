@@ -5,6 +5,8 @@ import { join } from "node:path";
 import { autoApprove, startHarness } from "./helpers.ts";
 import { ROOT_ID } from "../src/orchestrator.ts";
 
+const read = (file: string) => readFileSync(file, "utf8").replace(/\r\n/g, "\n");
+
 function rootToken(h: Awaited<ReturnType<typeof startHarness>>): string {
   return h.orch.registry.get(ROOT_ID)!.token;
 }
@@ -26,8 +28,8 @@ test("root delegates to two children, waits, and merges with approval", async ()
     assert.match(reply, /child-a-done/);
     assert.match(reply, /child-b-done/);
     assert.match(reply, /all merged/);
-    assert.equal(readFileSync(join(h.repoDir, "a.txt"), "utf8"), "from-a\n");
-    assert.equal(readFileSync(join(h.repoDir, "b.txt"), "utf8"), "from-b\n");
+    assert.equal(read(join(h.repoDir, "a.txt")), "from-a\n");
+    assert.equal(read(join(h.repoDir, "b.txt")), "from-b\n");
     const tree = h.orch.tree();
     assert.deepEqual(tree.filter((n) => n.id !== ROOT_ID).map((n) => n.status), ["done", "done"]);
   } finally {
@@ -188,7 +190,7 @@ test("merge_child returns a pending message while approval is open, then merges 
     h.orch.resolveApproval(h.orch.pendingApprovals()[0].id, true);
     const second = await h.orch.call(token, "merge_child", { id: spawned.id });
     assert.match(second.text, /merged/);
-    assert.equal(readFileSync(join(h.repoDir, "p.txt"), "utf8"), "pending\n");
+    assert.equal(read(join(h.repoDir, "p.txt")), "pending\n");
   } finally {
     await h.close();
   }

@@ -12,7 +12,7 @@ export function claudeAdapter(bin = process.env.AGENT_COMPANY_CLAUDE_BIN ?? "cla
     supportsResume: true,
     invoke(opts: RunOptions): Invocation {
       mkdirSync(opts.workDir, { recursive: true });
-      const args = ["-p", opts.prompt, "--output-format", "stream-json", "--verbose"];
+      const args = ["-p", "--output-format", "stream-json", "--verbose"];
       if (opts.mcpUrl) {
         const file = join(opts.workDir, "claude-mcp.json");
         writeFileSync(file, JSON.stringify({ mcpServers: { orch: { type: "http", url: opts.mcpUrl } } }));
@@ -23,7 +23,7 @@ export function claudeAdapter(bin = process.env.AGENT_COMPANY_CLAUDE_BIN ?? "cla
       if (opts.model) args.push("--model", opts.model);
       if (opts.sessionId) args.push("--resume", opts.sessionId);
       args.push("--allowedTools", (opts.profile === "root" ? ROOT_TOOLS : WORKER_TOOLS).join(","));
-      return { cmd: bin, args, env: opts.env ?? {} };
+      return { cmd: bin, args, env: opts.env ?? {}, stdin: opts.prompt };
     },
     parseLine(line: string): AdapterEvent[] {
       const event = parseJson(line);

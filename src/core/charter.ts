@@ -3,6 +3,8 @@ import type { LevelLimits, Limits } from "./limits.ts";
 
 export const KNOWN_CLIS = ["claude", "codex", "gemini", "opencode"] as const;
 
+const isEngine = (name: string): boolean => (KNOWN_CLIS as readonly string[]).includes(name) || /^api:[a-z0-9][a-z0-9-]{0,40}(:.+)?$/.test(name);
+
 export interface Charter {
   name: string;
   rootCli: string;
@@ -91,11 +93,11 @@ export function validateCharter(charter: Charter): void {
     if (level.canSpawn && level.maxChildren < 1) throw new Error(`charter: level.${depth} can_spawn needs max_children >= 1`);
     if (depth > 0 && level.allowedCli.length === 0) throw new Error(`charter: level.${depth} allowed_cli is empty`);
     for (const cli of level.allowedCli) {
-      if (!(KNOWN_CLIS as readonly string[]).includes(cli)) throw new Error(`charter: unknown cli "${cli}"`);
+      if (!isEngine(cli)) throw new Error(`charter: unknown cli "${cli}"`);
     }
   }
   if (limits.levels[limits.maxDepth].canSpawn) throw new Error("charter: the deepest level must have can_spawn = false");
-  if (!(KNOWN_CLIS as readonly string[]).includes(charter.rootCli)) throw new Error(`charter: unknown root cli "${charter.rootCli}"`);
+  if (!isEngine(charter.rootCli)) throw new Error(`charter: unknown root cli "${charter.rootCli}"`);
 }
 
 export function parseCharter(source: string): Charter {

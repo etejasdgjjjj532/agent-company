@@ -1,10 +1,16 @@
-import { mkdirSync, writeFileSync } from "node:fs";
+import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { engineName, opencodeProviderSetup, type ApiProvider } from "../core/providers.ts";
 import { clip, parseJson, type Adapter, type AdapterEvent, type Invocation, type RunOptions } from "./types.ts";
 
-export function opencodeAdapter(bin = process.env.AGENT_COMPANY_OPENCODE_BIN ?? "opencode"): Adapter {
+export interface ApiBinding {
+  provider: ApiProvider;
+  model?: string;
+}
+
+export function opencodeAdapter(bin = process.env.AGENT_COMPANY_OPENCODE_BIN ?? "opencode", api?: ApiBinding): Adapter {
   return {
-    name: "opencode",
+    name: api ? engineName(api.provider.id, api.model) : "opencode",
     verified: true,
     supportsResume: true,
     invoke(opts: RunOptions): Invocation {
@@ -17,13 +23,20 @@ export function opencodeAdapter(bin = process.env.AGENT_COMPANY_OPENCODE_BIN ?? 
         },
       };
       if (opts.mcpUrl) config.mcp = { orch: { type: "remote", url: opts.mcpUrl, enabled: true } };
+      const setup = api ? opencodeProviderSetup(api.provider, api.model) : null;
+      if (setup) Object.assign(config, setup.config, { model: setup.model });
       const file = join(opts.workDir, "opencode.json");
-      writeFileSync(file, JSON.stringify(config));
+      writeFileSync(file, JSON.stringify(config), { mode: 0o600 });
       const args = ["run", "--format", "json"];
       if (opts.sessionId) args.push("--session", opts.sessionId);
-      if (opts.model) args.push("--model", opts.model);
-      args.push(opts.prompt);
-      return { cmd: bin, args, env: { OPENCODE_CONFIG: file, ...(opts.env ?? {}) } };
+      if (opts.model || setup) args.push("--model", opts.model ?? setup!.model);
+      return {
+        cmd: bin,
+        args,
+        env: { OPENCODE_CONFIG: file, ...(opts.env ?? {}) },
+        stdin: opts.prompt,
+        cleanup: setup?.hasSecret ? () => rmSync(file, { force: true }) : undefined,
+      };
     },
     parseLine(line: string): AdapterEvent[] {
       const event = parseJson(line);

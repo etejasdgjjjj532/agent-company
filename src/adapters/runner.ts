@@ -1,5 +1,6 @@
 import { spawn } from "node:child_process";
 import { createInterface } from "node:readline";
+import { killTree, resolveSpawn } from "../core/platform.ts";
 import type { Adapter, AdapterEvent, RunOptions } from "./types.ts";
 
 export interface RunResult {
@@ -30,11 +31,20 @@ export function runAgent(
   runner: RunnerOptions = {},
 ): AgentRun {
   const invocation = adapter.invoke(opts);
-  const child = spawn(invocation.cmd, invocation.args, {
+  const env = { ...process.env, ...invocation.env };
+  const spec = resolveSpawn(invocation.cmd, invocation.args, env);
+  const child = spawn(spec.file, spec.args, {
     cwd: opts.cwd,
-    env: { ...process.env, ...invocation.env },
-    stdio: ["ignore", "pipe", "pipe"],
+    env,
+    stdio: [invocation.stdin === undefined ? "ignore" : "pipe", "pipe", "pipe"],
+    detached: process.platform !== "win32",
+    windowsHide: true,
+    windowsVerbatimArguments: spec.windowsVerbatimArguments,
   });
+  if (invocation.stdin !== undefined && child.stdin) {
+    child.stdin.on("error", () => undefined);
+    child.stdin.end(invocation.stdin);
+  }
 
   let lastText = "";
   let finalText: string | undefined;
@@ -70,9 +80,9 @@ export function runAgent(
   });
 
   const kill = () => {
-    if (child.exitCode !== null || child.killed) return;
-    child.kill("SIGTERM");
-    killTimer = setTimeout(() => child.kill("SIGKILL"), 3000);
+    if (child.exitCode !== null) return;
+    killTree(child.pid, "SIGTERM");
+    killTimer = setTimeout(() => killTree(child.pid, "SIGKILL"), 3000);
   };
   const timeout = runner.timeoutMs ? setTimeout(() => { stopped = true; kill(); }, runner.timeoutMs) : undefined;
 
@@ -83,6 +93,11 @@ export function runAgent(
       settled = true;
       if (timeout) clearTimeout(timeout);
       if (killTimer) clearTimeout(killTimer);
+      try {
+        invocation.cleanup?.();
+      } catch {
+        // best effort
+      }
       const text = finalText ?? lastText;
       resolve({
         ok: !stopped && !isError && exitCode === 0,

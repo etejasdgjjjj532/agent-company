@@ -15,9 +15,9 @@ export function geminiAdapter(bin = process.env.AGENT_COMPANY_GEMINI_BIN ?? "gem
       const file = join(opts.workDir, "gemini-settings.json");
       writeFileSync(file, JSON.stringify(settings));
       const mode = opts.profile === "root" ? "plan" : "auto_edit";
-      const args = ["-p", opts.prompt, "-o", "stream-json", "--approval-mode", mode];
+      const args = ["-p", "Follow the instructions given on stdin.", "-o", "stream-json", "--approval-mode", mode];
       if (opts.model) args.push("-m", opts.model);
-      return { cmd: bin, args, env: { GEMINI_CLI_SYSTEM_SETTINGS_PATH: file, ...(opts.env ?? {}) } };
+      return { cmd: bin, args, env: { GEMINI_CLI_SYSTEM_SETTINGS_PATH: file, ...(opts.env ?? {}) }, stdin: opts.prompt };
     },
     parseLine(line: string): AdapterEvent[] {
       const event = parseJson(line);

@@ -13,8 +13,7 @@ export function codexAdapter(bin = process.env.AGENT_COMPANY_CODEX_BIN ?? "codex
       args.push("-c", `sandbox_mode="${sandbox}"`, "-c", 'approval_policy="never"');
       if (opts.mcpUrl) args.push("-c", `mcp_servers.orch.url=${JSON.stringify(opts.mcpUrl)}`);
       if (opts.model) args.push("-m", opts.model);
-      args.push(opts.prompt);
-      return { cmd: bin, args, env: opts.env ?? {} };
+      return { cmd: bin, args, env: opts.env ?? {}, stdin: opts.prompt };
     },
     parseLine(line: string): AdapterEvent[] {
       const event = parseJson(line);
