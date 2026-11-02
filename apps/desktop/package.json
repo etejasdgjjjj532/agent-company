@@ -1,7 +1,7 @@
 {
   "name": "agent-company-desktop",
   "productName": "Agent Company",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Desktop app for Agent Company",
   "private": true,
   "type": "module",
