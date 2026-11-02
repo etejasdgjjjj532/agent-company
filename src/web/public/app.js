@@ -3,7 +3,7 @@ import { renderSession } from "./session.js";
 import { renderSettings } from "./settings.js";
 import { renderSetup } from "./setup.js";
 import { Store } from "./store.js";
-import { $, api, desktop, el, fmtNumber, fmtTime, setTerms, term } from "./util.js";
+import { $, api, debounce, desktop, el, fmtNumber, fmtTime, renderDiff, setTerms, term } from "./util.js";
 
 const ctx = {
   state: { active: null, sessions: [], settings: { terms: "tech", recentProjects: [], providers: [] }, nodes: [], approvals: [], home: "" },
@@ -30,6 +30,15 @@ const ctx = {
     $("app").classList.toggle("side-open");
     ctx.graph?.resize();
   },
+  showTab(tab) {
+    ctx.sideTab = tab;
+    $("app").classList.add("side-open");
+    drawSide();
+  },
+  openDiff(id) {
+    ctx.selectedNode = id;
+    ctx.showTab("diff");
+  },
   selectNode(id) {
     ctx.selectedNode = id;
     ctx.sideTab = "node";
@@ -44,8 +53,29 @@ function toast(message, bad = false) {
   setTimeout(() => node.remove(), bad ? 6000 : 3000);
 }
 
+let searchHits = null;
+
+const runSearch = debounce(async (q) => {
+  if (!q.trim()) {
+    searchHits = null;
+    return void drawSidebar();
+  }
+  try {
+    searchHits = (await api(`/api/search?q=${encodeURIComponent(q)}`)).results;
+  } catch {
+    searchHits = [];
+  }
+  drawSidebar();
+}, 250);
+
 function drawSidebar() {
   const box = $("sessions");
+  if (searchHits) {
+    box.replaceChildren(el("h3", {}, `検索結果 (${searchHits.length})`), ...searchHits.map((h) =>
+      el("button", { class: "search-hit", onclick: () => ctx.go({ name: "session", id: h.sessionId }) },
+        el("div", { class: "small muted" }, `${h.name} / ${fmtTime(h.ts)} / ${h.role === "user" ? "あなた" : "Root"}`), el("div", { class: "small" }, h.snippet))));
+    return void ($("engine-state").textContent = ctx.state.active ? `実行中: ${ctx.state.active.name}` : "");
+  }
   const { sessions, active } = ctx.state;
   const currentId = ctx.route.name === "session" ? ctx.route.id : null;
   const items = sessions.map((s) =>
@@ -71,7 +101,7 @@ function drawSide() {
   const side = $("side");
   const store = currentStore();
   const tabs = el("div", { class: "side-tabs" },
-    [["graph", "グラフ"], ["node", "ノード"], ["info", "設計"]].map(([key, label]) =>
+    [["graph", "グラフ"], ["node", "ノード"], ["diff", "差分"], ["files", "ファイル"], ["usage", "使用量"]].map(([key, label]) =>
       el("button", { class: `tab${ctx.sideTab === key ? " active" : ""}`, onclick: () => { ctx.sideTab = key; drawSide(); } }, label)),
     el("span", { class: "grow" }), el("button", { class: "small ghost", onclick: () => ctx.toggleSide(), "aria-label": "閉じる" }, "×"));
   const body = el("div", { class: "side-body" });
@@ -89,7 +119,9 @@ function drawSide() {
     ctx.graph?.stop();
     ctx.graph = null;
     if (ctx.sideTab === "node") renderNodeDetail(body, store);
-    else renderInfo(body, store);
+    else if (ctx.sideTab === "diff") renderDiffTab(body, store);
+    else if (ctx.sideTab === "files") renderFilesTab(body);
+    else renderUsageTab(body, store);
   }
 }
 
@@ -109,6 +141,7 @@ function renderNodeDetail(body, store) {
   const log = el("div", { class: "log" }, n.log.slice(-80).map((line) => el("div", { class: line.kind }, line.text)));
   const parts = [el("h2", {}, n.id === "root" ? "Root" : `${n.id} ${n.role || ""}`), el("p", { class: "muted" }, n.task || ""), kv, log];
   const readOnly = ctx.route.name === "session" && ctx.route.id !== ctx.state.active?.id;
+  if (n.branch) parts.push(el("button", { class: "small", onclick: () => ctx.openDiff(n.id) }, "差分を見る"));
   if (!readOnly && (n.status === "running" || n.status === "pending")) parts.push(el("button", { class: "small", onclick: () => api(`/api/node/${encodeURIComponent(n.id)}/stop`, {}).catch((e) => toast(e.message, true)) }, "このノードを停止"));
   if (!readOnly && n.id !== "root") {
     const input = el("input", { type: "text", placeholder: "このノードへ直接指示 (実行中なら完了後に実行)" });
@@ -128,15 +161,61 @@ function renderNodeDetail(body, store) {
   log.scrollTop = log.scrollHeight;
 }
 
-function renderInfo(body, store) {
+function renderUsageTab(body, store) {
+  const rows = [...store.nodes.values()].sort((x, y) => (x.depth - y.depth) || x.id.localeCompare(y.id));
+  const total = rows.reduce((sum, n) => sum + (n.inputTokens || 0) + (n.outputTokens || 0), 0);
+  const table = el("table", { class: "usage" },
+    el("thead", {}, el("tr", {}, ["ノード", "エンジン", "状態", "トークン", "コスト"].map((h) => el("th", {}, h)))),
+    el("tbody", {}, rows.map((n) => el("tr", { onclick: () => ctx.selectNode(n.id) },
+      el("td", {}, n.id === "root" ? "Root" : n.id), el("td", {}, n.cli), el("td", {}, n.status),
+      el("td", {}, fmtNumber((n.inputTokens || 0) + (n.outputTokens || 0))), el("td", {}, typeof n.costUsd === "number" ? `$${n.costUsd.toFixed(3)}` : "不明")))));
   const charter = ctx.state.charter;
-  body.append(el("div", { class: "detail" },
-    el("h2", {}, "組織の設計"),
-    el("dl", { class: "kv" },
-      el("dt", {}, "最大の深さ"), el("dd", {}, String(charter?.maxDepth ?? "-")),
-      el("dt", {}, "同時実行"), el("dd", {}, String(charter?.maxConcurrent ?? "-")),
-      el("dt", {}, "ノード数"), el("dd", {}, String(store.nodes.size))),
-    el("p", { class: "muted small" }, "深さや同時実行数は、新しいセッションの作成画面で変えられます。")));
+  body.append(el("div", { class: "detail" }, el("h2", {}, "使用量"), table,
+    el("p", { class: "muted small" }, `合計 ${fmtNumber(total)} トークン / 最大の深さ ${charter?.maxDepth ?? "-"} / 同時実行 ${charter?.maxConcurrent ?? "-"}`)));
+}
+
+async function renderDiffTab(body, store) {
+  const id = ctx.selectedNode;
+  const n = store.nodes.get(id);
+  const wrap = el("div", { class: "detail" }, el("h2", {}, `差分: ${id === "root" ? "Root" : id}`));
+  body.append(wrap);
+  if (!n || n.id === "root") return void wrap.append(el("p", { class: "muted" }, "グラフかチャットで、子のノードを選んでください。"));
+  const live = ctx.route.id === ctx.state.active?.id;
+  if (!live) return void wrap.append(el("p", { class: "muted" }, "過去のセッションの差分は、再開すると見られます。"));
+  try {
+    const { diff } = await api(`/api/diff?node=${encodeURIComponent(id)}`);
+    wrap.append(renderDiff(diff));
+  } catch (error) {
+    wrap.append(el("p", { class: "muted" }, error.message));
+  }
+}
+
+async function renderFilesTab(body) {
+  const wrap = el("div", {});
+  body.append(wrap);
+  const live = ctx.route.id === ctx.state.active?.id;
+  if (!live) return void wrap.append(el("div", { class: "detail muted" }, "ファイルは、実行中のセッションでだけ見られます。"));
+  const list = el("div", { class: "file-list" });
+  const preview = el("div", { class: "detail" }, el("p", { class: "muted" }, "ファイルを選ぶと、中身が出ます (読み取り専用)。"));
+  wrap.append(list, preview);
+  try {
+    const { files } = await api("/api/files");
+    for (const file of files.slice(0, 1500)) {
+      const item = el("button", { class: "file-item", type: "button", onclick: async () => {
+        for (const x of list.children) x.classList.remove("selected");
+        item.classList.add("selected");
+        try {
+          const f = await api(`/api/file?path=${encodeURIComponent(file)}`);
+          preview.replaceChildren(el("h2", {}, file), f.binary ? el("p", { class: "muted" }, "バイナリファイルは表示できません。") : el("pre", { class: "tree" }, f.text + (f.truncated ? "\n… (長いので途中まで)" : "")));
+        } catch (error) {
+          preview.replaceChildren(el("p", { class: "muted" }, error.message));
+        }
+      } }, file);
+      list.append(item);
+    }
+  } catch (error) {
+    list.append(el("div", { class: "detail muted" }, error.message));
+  }
 }
 
 function currentStore() {
@@ -190,6 +269,7 @@ async function renderRoute() {
 }
 
 function bindShell() {
+  $("search").addEventListener("input", (e) => runSearch(e.target.value));
   $("new-session").addEventListener("click", () => ctx.go({ name: "setup" }));
   $("open-settings").addEventListener("click", () => ctx.go({ name: "settings", tab: "general" }));
   window.addEventListener("keydown", (e) => {

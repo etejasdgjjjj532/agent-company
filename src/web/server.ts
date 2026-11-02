@@ -3,11 +3,12 @@ import { existsSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { buildCharter, PRESETS, recommendPreset, serializeCharter, validateCharter, type PresetName } from "../core/charter.ts";
+import { KNOWN_CLIS, buildCharter, PRESETS, recommendPreset, serializeCharter, validateCharter, type PresetName } from "../core/charter.ts";
 import type { OrchEvent } from "../core/events.ts";
 import { isGitRepo } from "../core/worktree.ts";
 import { detectClis, runDoctor } from "../doctor.ts";
 import type { Hub } from "../hub.ts";
+import { PERMISSION_LABELS } from "../core/engines.ts";
 import { PROVIDER_PRESETS, engineName, isKnownEngine } from "../core/providers.ts";
 import { describeCharter, heuristicTasks, makeAdvisor, type ScaleAdvice } from "../secretary.ts";
 
@@ -113,6 +114,7 @@ async function testProvider(
 }
 
 interface SetupInput {
+  mode: "multi" | "normal";
   goal: string;
   rootCli: string;
   childClis: string[];
@@ -128,6 +130,7 @@ function parseSetup(body: Record<string, any>, available: string[]): SetupInput 
   const int = (value: unknown) => (Number.isInteger(Number(value)) && Number(value) > 0 ? Number(value) : undefined);
   const preset = typeof body.preset === "string" && body.preset in PRESETS ? (body.preset as PresetName) : undefined;
   return {
+    mode: body.mode === "normal" ? "normal" : "multi",
     goal: String(body.goal ?? ""),
     rootCli,
     childClis: childClis.length > 0 ? childClis : [rootCli],
@@ -205,17 +208,33 @@ export async function startWebServer(options: WebOptions): Promise<WebHandle> {
         if (url.pathname === "/api/providers") {
           return json(res, 200, { providers: hub.publicSettings().providers, presets: PROVIDER_PRESETS });
         }
+        if (url.pathname === "/api/engines/settings") {
+          const names = [...KNOWN_CLIS, ...hub.settings().providers.map((p) => engineName(p.id))];
+          return json(res, 200, {
+            engines: names.map((name) => ({ name, settings: hub.engineSettings(name) })),
+            permissions: PERMISSION_LABELS,
+          });
+        }
+        if (url.pathname === "/api/templates") return json(res, 200, { templates: hub.settings().templates });
+        if (url.pathname === "/api/search") return json(res, 200, { results: hub.search(url.searchParams.get("q") ?? "") });
+        if (url.pathname === "/api/diff") {
+          const orch = hub.active?.orch;
+          if (!orch) return json(res, 409, { error: "セッションが開始されていません" });
+          return json(res, 200, { diff: orch.diffFor(url.searchParams.get("node") ?? "") });
+        }
+        if (url.pathname === "/api/files") return json(res, 200, { files: hub.listFiles() });
+        if (url.pathname === "/api/file") return json(res, 200, hub.readFile(url.searchParams.get("path") ?? ""));
         if (url.pathname === "/api/engines") {
           const clis = detectClis();
           const opencodeReady = clis.includes("opencode");
           const engines = [
-            ...clis.map((name) => ({ name, label: name, kind: "cli", available: true })),
+            ...clis.map((name) => ({ name, label: name, kind: "cli", available: hub.engineSettings(name).enabled, reason: hub.engineSettings(name).enabled ? undefined : "設定で無効になっています" })),
             ...hub.settings().providers.map((p) => ({
               name: engineName(p.id),
               label: `${p.name} (API${p.defaultModel ? `: ${p.defaultModel}` : ""})`,
               kind: "api",
-              available: opencodeReady,
-              reason: opencodeReady ? undefined : "API を使うには opencode が必要です",
+              available: opencodeReady && hub.engineSettings(engineName(p.id)).enabled,
+              reason: !opencodeReady ? "API を使うには opencode が必要です" : hub.engineSettings(engineName(p.id)).enabled ? undefined : "設定で無効になっています",
             })),
           ];
           return json(res, 200, { engines, opencodeReady });
@@ -250,6 +269,17 @@ export async function startWebServer(options: WebOptions): Promise<WebHandle> {
         if (url.pathname === "/api/providers") {
           return json(res, 200, { provider: hub.saveProvider(body) });
         }
+        if (url.pathname === "/api/engines/settings") {
+          return json(res, 200, { settings: hub.saveEngine(String(body.name ?? ""), body) });
+        }
+        if (url.pathname === "/api/templates") return json(res, 200, { template: hub.saveTemplate(body) });
+        if (url.pathname === "/api/templates/delete") {
+          hub.deleteTemplate(String(body.id ?? ""));
+          return json(res, 200, { ok: true });
+        }
+        if (url.pathname === "/api/session/mode") {
+          return json(res, 200, { meta: hub.setMode(body.mode === "normal" ? "normal" : "multi") });
+        }
         if (url.pathname === "/api/providers/delete") {
           hub.deleteProvider(String(body.id ?? ""));
           return json(res, 200, { ok: true });
@@ -276,6 +306,7 @@ export async function startWebServer(options: WebOptions): Promise<WebHandle> {
           const tasks = advice?.independentTasks ?? heuristicTasks(setup.goal);
           const recommended = recommendPreset(tasks);
           const charter = buildCharter({ ...setup, preset: setup.preset ?? recommended });
+          if (charter.mode === "normal") return json(res, 200, { tasks: 1, recommended: "light", advice: null, charter, toml: serializeCharter(charter), tree: describeCharter(charter) });
           validateCharter(charter);
           return json(res, 200, { tasks, recommended, advice, charter, toml: serializeCharter(charter), tree: describeCharter(charter) });
         }
@@ -285,6 +316,7 @@ export async function startWebServer(options: WebOptions): Promise<WebHandle> {
           if (!info.isGit && body.allowNonGit !== true) return json(res, 400, { error: "git リポジトリではありません。git init するか、非 git での実行を許可してください", needsGit: true });
           const setup = parseSetup(body, detectClis());
           const charter = buildCharter({ ...setup, preset: setup.preset ?? recommendPreset(heuristicTasks(setup.goal)) });
+          if (!hub.engineSettings(setup.rootCli).enabled) return json(res, 400, { error: `${setup.rootCli} は設定で無効になっています` });
           validateCharter(charter);
           for (const cli of new Set([setup.rootCli, ...setup.childClis])) {
             if (!hub.adapters[cli]) return json(res, 400, { error: `${cli} のアダプタがありません` });

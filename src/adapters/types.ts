@@ -5,6 +5,8 @@ export type AdapterEvent =
   | { kind: "usage"; inputTokens: number; outputTokens: number; costUsd?: number }
   | { kind: "final"; text: string; isError: boolean };
 
+import type { EngineSettings } from "../core/engines.ts";
+
 export type Profile = "root" | "worker";
 
 export interface RunOptions {
@@ -16,6 +18,7 @@ export interface RunOptions {
   model?: string;
   workDir: string;
   env?: Record<string, string>;
+  engine?: EngineSettings;
 }
 
 export interface Invocation {

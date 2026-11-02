@@ -10,13 +10,18 @@ export function geminiAdapter(bin = process.env.AGENT_COMPANY_GEMINI_BIN ?? "gem
     supportsResume: false,
     invoke(opts: RunOptions): Invocation {
       mkdirSync(opts.workDir, { recursive: true });
-      const settings: Record<string, unknown> = { tools: { exclude: ["web_fetch", "google_web_search"] } };
-      if (opts.mcpUrl) settings.mcpServers = { orch: { httpUrl: opts.mcpUrl, trust: true } };
+      const engine = opts.engine;
+      const settings: Record<string, unknown> = { tools: { exclude: engine?.allowWeb ? [] : ["web_fetch", "google_web_search"] } };
+      const servers: Record<string, unknown> = {};
+      if (opts.mcpUrl) servers.orch = { httpUrl: opts.mcpUrl, trust: true };
+      for (const s of engine?.mcpServers ?? []) servers[s.name] = s.url ? { httpUrl: s.url } : { command: s.command, args: s.args ?? [] };
+      if (Object.keys(servers).length > 0) settings.mcpServers = servers;
       const file = join(opts.workDir, "gemini-settings.json");
       writeFileSync(file, JSON.stringify(settings));
-      const mode = opts.profile === "root" ? "plan" : "auto_edit";
+      const mode = opts.profile === "root" || engine?.permission === "readonly" ? "plan" : "auto_edit";
       const args = ["-p", "Follow the instructions given on stdin.", "-o", "stream-json", "--approval-mode", mode];
-      if (opts.model) args.push("-m", opts.model);
+      const model = opts.model || engine?.model;
+      if (model) args.push("-m", model);
       return { cmd: bin, args, env: { GEMINI_CLI_SYSTEM_SETTINGS_PATH: file, ...(opts.env ?? {}) }, stdin: opts.prompt };
     },
     parseLine(line: string): AdapterEvent[] {

@@ -6,6 +6,8 @@ import { runAgent, type AgentRun, type RunResult } from "./adapters/runner.ts";
 import type { Adapter, AdapterEvent, Profile } from "./adapters/types.ts";
 import type { Charter } from "./core/charter.ts";
 import type { EventBus, NodeStatus, OrchEvent } from "./core/events.ts";
+import { buildCharter, buildNormalCharter, type SessionMode } from "./core/charter.ts";
+import { DEFAULT_ENGINE, type EngineSettings } from "./core/engines.ts";
 import { checkSpawn } from "./core/limits.ts";
 import { Registry, type AgentNode, type NodeView } from "./core/registry.ts";
 import { commitAll, createWorktree, diffAgainst, git, isGitRepo, mergeBranch } from "./core/worktree.ts";
@@ -24,6 +26,7 @@ export interface OrchestratorOptions {
   mcpBaseUrl: () => string;
   approvalWaitMs?: number;
   restore?: OrchEvent[];
+  engineSettings?: (cli: string) => EngineSettings;
 }
 
 class Semaphore {
@@ -55,7 +58,18 @@ function clipResult(text: string): string {
 
 export class Orchestrator implements McpHost {
   readonly registry = new Registry();
-  readonly charter: Charter;
+  private modeCharters: { multi: Charter; normal: Charter };
+  private active: Charter;
+  private engineOf: (cli: string) => EngineSettings;
+  private modeNote: string | null = null;
+
+  get charter(): Charter {
+    return this.active;
+  }
+
+  get mode(): SessionMode {
+    return this.active.mode;
+  }
   readonly bus: EventBus;
   private adapters: Record<string, Adapter>;
   private repoDir: string;
@@ -77,7 +91,12 @@ export class Orchestrator implements McpHost {
   private mergeApprovals = new Map<string, { state: "pending" | "approved" | "declined"; promise: Promise<boolean> }>();
 
   constructor(options: OrchestratorOptions) {
-    this.charter = options.charter;
+    this.engineOf = options.engineSettings ?? (() => DEFAULT_ENGINE);
+    const given = options.charter;
+    this.modeCharters = given.mode === "normal"
+      ? { normal: given, multi: buildCharter({ rootCli: given.rootCli, childClis: [given.rootCli], preset: "standard" }) }
+      : { multi: given, normal: buildNormalCharter({ rootCli: given.rootCli }) };
+    this.active = given;
     this.adapters = options.adapters;
     this.repoDir = options.repoDir;
     this.dataDir = options.dataDir;
@@ -184,9 +203,38 @@ export class Orchestrator implements McpHost {
     return `You may create up to ${level.maxChildren} sub-agents (allowed cli: ${child.allowedCli.join(", ")}) with spawn_child, then collect them with wait_children. Delegate only when it clearly speeds the work up.`;
   }
 
+  private withInstructions(cli: string, text: string): string {
+    const extra = this.engineOf(cli).instructions.trim();
+    return extra ? `Additional instructions from the user for this agent:\n${extra}\n\n${text}` : text;
+  }
+
+  setMode(mode: SessionMode): void {
+    if (mode === this.active.mode) return;
+    if (mode === "normal" && this.registry.all().some((n) => n.id !== ROOT_ID && (n.status === "running" || n.status === "pending"))) {
+      throw new Error("実行中のサブエージェントがいるので、通常モードには切り替えられません。先に停止してください");
+    }
+    this.active = this.modeCharters[mode];
+    this.modeNote = mode === "normal"
+      ? "[Mode switched to NORMAL] Sub-agent tools are no longer available. Work directly in the repository yourself and answer the user."
+      : "[Mode switched to MULTI-AGENT] You now coordinate sub-agents with the orch tools (spawn_child, wait_children, get_child_diff, merge_child). Do not edit files yourself.";
+    this.bus.emit("session.mode", ROOT_ID, { mode });
+  }
+
   private rootPrompt(message: string, first: boolean): string {
-    if (!first) return message;
-    return [
+    const note = this.modeNote ? `${this.modeNote}\n\n` : "";
+    this.modeNote = null;
+    if (this.active.mode === "normal") {
+      if (!first) return `${note}${message}`;
+      return this.withInstructions(this.active.rootCli, [
+        "You are a coding agent working directly in the user's repository (current directory).",
+        "Make the changes the user asks for yourself, keep answers short and concrete.",
+        "",
+        "--- USER REQUEST ---",
+        message,
+      ].join("\n"));
+    }
+    if (!first) return `${note}${message}`;
+    return this.withInstructions(this.active.rootCli, [
       "You are the Root agent of a team of coding agents. The user talks only to you.",
       "Split the work into independent subtasks and delegate them with the MCP tools of server \"orch\" (spawn_child, wait_children, get_child_diff, merge_child, get_tree_status).",
       "If sub-agents must coordinate, link them with link_children so they can send_message / read_messages to each other.",
@@ -196,11 +244,11 @@ export class Orchestrator implements McpHost {
       "",
       "--- USER REQUEST ---",
       message,
-    ].join("\n");
+    ].join("\n"));
   }
 
   private childPrompt(node: AgentNode): string {
-    return [
+    return this.withInstructions(node.cli, [
       `You are a ${node.role} agent at depth ${node.depth} in a tree of coding agents.`,
       "Work only inside the current directory, which is your own git worktree. Do not use the network.",
       this.limitsText(node),
@@ -210,7 +258,7 @@ export class Orchestrator implements McpHost {
       "",
       "--- TASK ---",
       node.task,
-    ].join("\n");
+    ].join("\n"));
   }
 
   async chat(message: string): Promise<string> {
@@ -225,10 +273,12 @@ export class Orchestrator implements McpHost {
     const first = !root.sessionId;
     const adapter = this.adapters[root.cli];
     if (!adapter) throw new Error(`no adapter for ${root.cli}`);
+    if (!this.engineOf(root.cli).enabled) throw new Error(`${root.cli} は設定で無効になっています`);
     root.attempts++;
     root.startedAt ??= Date.now();
     this.setStatus(root, "running");
-    const result = await this.execute(root, adapter, "root", this.rootPrompt(message, first || !adapter.supportsResume), root.sessionId);
+    const profile: Profile = this.active.mode === "normal" ? "worker" : "root";
+    const result = await this.execute(root, adapter, profile, this.rootPrompt(message, first || !adapter.supportsResume), root.sessionId);
     const text = result.text || (result.ok ? "(no reply)" : `Root failed: ${result.stderrTail.trim() || "unknown error"}`);
     this.setStatus(root, result.stopped ? "stopped" : "waiting");
     this.bus.emit("chat.reply", ROOT_ID, { text, ok: result.ok });
@@ -242,7 +292,8 @@ export class Orchestrator implements McpHost {
         cwd: node.cwd,
         prompt,
         profile,
-        mcpUrl: this.mcpUrl(node),
+        mcpUrl: node.id === ROOT_ID && this.active.mode === "normal" ? undefined : this.mcpUrl(node),
+        engine: this.engineOf(node.cli),
         sessionId,
         workDir: this.nodeDir(node),
         env: { AGENT_COMPANY_ATTEMPT: String(node.attempts), AGENT_COMPANY_NODE: node.id },
@@ -264,6 +315,7 @@ export class Orchestrator implements McpHost {
     });
     if (!check.ok) throw new Error(check.reason);
     if (!this.adapters[cli]) throw new Error(`no adapter for "${cli}"`);
+    if (!this.engineOf(cli).enabled) throw new Error(`${cli} は設定で無効になっています`);
     const budget = this.charter.maxTotalTokens;
     if (budget > 0 && this.totalTokens() >= budget) throw new Error(`token budget ${budget} exhausted`);
     const id = this.nextId(parent);
@@ -464,6 +516,9 @@ export class Orchestrator implements McpHost {
           break;
         case "node.result":
           if (node) node.result = d.result;
+          break;
+        case "session.mode":
+          this.active = d.mode === "normal" ? this.modeCharters.normal : this.modeCharters.multi;
           break;
         case "node.linked":
           for (const a of d.ids as string[]) for (const b of d.ids as string[]) if (a < b) this.links.add(`${a}|${b}`);
@@ -733,6 +788,13 @@ export class Orchestrator implements McpHost {
     if (!merged.ok) throw new Error(`merge conflict, merge aborted:\n${merged.output}`);
     this.bus.emit("node.merged", child.id, { into: node.id });
     return `merged ${child.id}`;
+  }
+
+  diffFor(id: string, maxChars = 200_000): string {
+    const child = this.registry.get(id);
+    if (!child?.branch || !child.parentId) throw new Error("このノードには差分がありません");
+    const parent = this.registry.get(child.parentId) as AgentNode;
+    return diffAgainst(parent.cwd, child.branch, maxChars) || "(変更なし)";
   }
 
   currentBranch(): string {

@@ -15,21 +15,27 @@ export function opencodeAdapter(bin = process.env.AGENT_COMPANY_OPENCODE_BIN ?? 
     supportsResume: true,
     invoke(opts: RunOptions): Invocation {
       mkdirSync(opts.workDir, { recursive: true });
+      const engine = opts.engine;
+      const locked = opts.profile === "root" || engine?.permission === "readonly";
       const config: Record<string, unknown> = {
         permission: {
-          edit: opts.profile === "root" ? "deny" : "allow",
-          bash: opts.profile === "root" ? "deny" : "allow",
-          webfetch: "deny",
+          edit: locked ? "deny" : "allow",
+          bash: locked ? "deny" : "allow",
+          webfetch: engine?.allowWeb ? "allow" : "deny",
         },
       };
-      if (opts.mcpUrl) config.mcp = { orch: { type: "remote", url: opts.mcpUrl, enabled: true } };
+      const mcp: Record<string, unknown> = {};
+      if (opts.mcpUrl) mcp.orch = { type: "remote", url: opts.mcpUrl, enabled: true };
+      for (const s of engine?.mcpServers ?? []) mcp[s.name] = s.url ? { type: "remote", url: s.url, enabled: true } : { type: "local", command: [s.command, ...(s.args ?? [])], enabled: true };
+      if (Object.keys(mcp).length > 0) config.mcp = mcp;
       const setup = api ? opencodeProviderSetup(api.provider, api.model) : null;
       if (setup) Object.assign(config, setup.config, { model: setup.model });
       const file = join(opts.workDir, "opencode.json");
       writeFileSync(file, JSON.stringify(config), { mode: 0o600 });
       const args = ["run", "--format", "json"];
       if (opts.sessionId) args.push("--session", opts.sessionId);
-      if (opts.model || setup) args.push("--model", opts.model ?? setup!.model);
+      const chosen = opts.model || (api ? undefined : engine?.model);
+      if (chosen || setup) args.push("--model", chosen ?? setup!.model);
       return {
         cmd: bin,
         args,

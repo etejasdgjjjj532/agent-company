@@ -12,17 +12,27 @@ export function claudeAdapter(bin = process.env.AGENT_COMPANY_CLAUDE_BIN ?? "cla
     supportsResume: true,
     invoke(opts: RunOptions): Invocation {
       mkdirSync(opts.workDir, { recursive: true });
+      const engine = opts.engine;
       const args = ["-p", "--output-format", "stream-json", "--verbose"];
-      if (opts.mcpUrl) {
+      const servers: Record<string, unknown> = {};
+      if (opts.mcpUrl) servers.orch = { type: "http", url: opts.mcpUrl };
+      for (const s of engine?.mcpServers ?? []) servers[s.name] = s.url ? { type: "http", url: s.url } : { type: "stdio", command: s.command, args: s.args ?? [] };
+      if (Object.keys(servers).length > 0) {
         const file = join(opts.workDir, "claude-mcp.json");
-        writeFileSync(file, JSON.stringify({ mcpServers: { orch: { type: "http", url: opts.mcpUrl } } }));
+        writeFileSync(file, JSON.stringify({ mcpServers: servers }));
         args.push("--mcp-config", file, "--strict-mcp-config");
       }
       args.push("--permission-mode", "acceptEdits", "--disable-slash-commands");
-      args.push("--disallowedTools", "WebFetch,WebSearch");
-      if (opts.model) args.push("--model", opts.model);
+      if (!engine?.allowWeb) args.push("--disallowedTools", "WebFetch,WebSearch");
+      const model = opts.model || engine?.model;
+      if (model) args.push("--model", model);
       if (opts.sessionId) args.push("--resume", opts.sessionId);
-      args.push("--allowedTools", (opts.profile === "root" ? ROOT_TOOLS : WORKER_TOOLS).join(","));
+      let tools = opts.profile === "root" ? ROOT_TOOLS : WORKER_TOOLS;
+      if (opts.profile !== "root" && engine?.permission === "readonly") tools = ROOT_TOOLS;
+      if (opts.profile !== "root" && engine?.permission === "extended") tools = [...WORKER_TOOLS, "Bash"];
+      const extra = (engine?.mcpServers ?? []).map((s) => `mcp__${s.name}`);
+      const web = engine?.allowWeb ? ["WebFetch", "WebSearch"] : [];
+      args.push("--allowedTools", [...tools, ...extra, ...web].join(","));
       return { cmd: bin, args, env: opts.env ?? {}, stdin: opts.prompt };
     },
     parseLine(line: string): AdapterEvent[] {

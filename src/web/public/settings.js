@@ -8,10 +8,11 @@ let editing = null;
 export async function renderSettings(root, ctx, wantedTab) {
   if (wantedTab) tab = wantedTab;
   const body = el("div");
-  const tabs = el("div", { class: "tabs" }, [["general", "一般"], ["api", "GPT互換 API"], ["env", "環境"]].map(([key, label]) =>
+  const tabs = el("div", { class: "tabs" }, [["general", "一般"], ["agents", "エージェント"], ["api", "GPT互換 API"], ["env", "環境"]].map(([key, label]) =>
     el("button", { class: `tab${tab === key ? " active" : ""}`, onclick: () => { tab = key; editing = null; renderSettings(root, ctx); } }, label)));
   root.replaceChildren(el("div", { class: "page" }, el("h1", {}, "設定"), tabs, body));
   if (tab === "general") general(body, ctx);
+  else if (tab === "agents") await agents(body, ctx);
   else if (tab === "api") await providers(body, ctx, root);
   else await environment(body);
 }
@@ -122,4 +123,46 @@ function providerForm(presets, ctx, refresh) {
         refresh();
       } }, "削除")),
   );
+}
+
+async function agents(body, ctx) {
+  const { engines, permissions } = await api("/api/engines/settings");
+  put(body, el("p", { class: "muted" }, "エージェントごとに、使うかどうか、モデル、追加の指示、権限、Web、外部ツール (MCP) を決められます。変更は、次に起動するエージェントから反映されます。"));
+  for (const { name, settings } of engines) put(body, engineCard(name, settings, permissions, ctx));
+}
+
+function engineCard(name, settings, permissions, ctx) {
+  const state = { mcp: settings.mcpServers.map((s) => ({ ...s, args: (s.args ?? []).join(" ") })) };
+  const enabled = el("input", { type: "checkbox", checked: settings.enabled });
+  const model = el("input", { type: "text", value: settings.model, placeholder: "空なら、そのエンジンの既定のモデル" });
+  const instructions = el("textarea", { rows: 3, placeholder: "例: 日本語で答える。テストを必ず書く。", value: settings.instructions });
+  const permission = el("select", {}, Object.entries(permissions).map(([key, label]) => el("option", { value: key, selected: key === settings.permission }, label)));
+  const web = el("input", { type: "checkbox", checked: settings.allowWeb });
+  const mcpBox = el("div");
+  const drawMcp = () => mcpBox.replaceChildren(
+    ...state.mcp.map((s, i) => el("div", { class: "row" },
+      el("input", { type: "text", value: s.name, placeholder: "名前", oninput: (e) => { s.name = e.target.value; } }),
+      el("input", { type: "text", value: s.url ?? s.command ?? "", placeholder: "URL (https://…) またはコマンド", oninput: (e) => { if (/^https?:/.test(e.target.value)) { s.url = e.target.value; delete s.command; } else { s.command = e.target.value; delete s.url; } } }),
+      el("input", { type: "text", value: s.args ?? "", placeholder: "引数 (コマンドのとき)", oninput: (e) => { s.args = e.target.value; } }),
+      el("button", { type: "button", class: "small danger", onclick: () => { state.mcp.splice(i, 1); drawMcp(); } }, "削除"))),
+    el("button", { type: "button", class: "small", onclick: () => { state.mcp.push({ name: "", url: "" }); drawMcp(); } }, "外部ツールを追加"));
+  drawMcp();
+  const note = el("span", { class: "small muted" });
+  return el("div", { class: "card engine-card" },
+    el("div", { class: "row" }, el("strong", { class: "grow" }, name.startsWith("api:") ? `${name} (GPT互換 API)` : name), el("label", { class: "check" }, enabled, "使う")),
+    el("div", { class: "field" }, el("label", {}, "モデル"), model),
+    el("div", { class: "field" }, el("label", {}, "追加の指示 (このエンジンのすべての作業の先頭に付きます)"), instructions),
+    el("div", { class: "row wrap" }, el("div", { class: "field grow" }, el("label", {}, "権限"), permission), el("label", { class: "check" }, web, "Web を使う")),
+    el("div", { class: "field" }, el("div", { class: "label" }, "外部ツール (MCP)"), mcpBox),
+    el("div", { class: "row" }, el("button", { class: "primary small", type: "button", onclick: async () => {
+      try {
+        await api("/api/engines/settings", { name, enabled: enabled.checked, model: model.value, instructions: instructions.value, permission: permission.value, allowWeb: web.checked,
+          mcpServers: state.mcp.filter((s) => s.name || s.url || s.command).map((s) => ({ name: s.name, url: s.url, command: s.command, args: s.args })) });
+        note.textContent = "保存しました";
+        ctx.toast(`${name} の設定を保存しました`);
+      } catch (error) {
+        note.textContent = error.message;
+        ctx.toast(error.message, true);
+      }
+    } }, "保存"), note));
 }

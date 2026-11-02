@@ -1,0 +1,21 @@
+import { existsSync, mkdirSync, mkdtempSync, readFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { defaultAdapters } from "../src/adapters/index.ts";
+import { buildCharter } from "../src/core/charter.ts";
+import { Hub } from "../src/hub.ts";
+import { makeRepo } from "../test/helpers.ts";
+
+const base = mkdtempSync(join(tmpdir(), "ac-normal-"));
+const repo = join(base, "repo");
+mkdirSync(repo);
+makeRepo(repo);
+const hub = new Hub({ adapters: defaultAdapters(), home: join(base, "home") });
+hub.saveEngine("claude", { instructions: "Always finish your final reply with the exact word OVER." });
+await hub.start({ repoDir: repo, charter: buildCharter({ rootCli: "claude", mode: "normal" }) });
+const reply = await hub.active!.orch.chat("Create a file hello.txt containing the word hi in the current directory, then tell me you did it in one short line.");
+console.log("reply:", JSON.stringify(reply));
+const file = join(repo, "hello.txt");
+console.log("file in the repo itself:", existsSync(file), existsSync(file) ? JSON.stringify(readFileSync(file, "utf8")) : "");
+console.log("nodes:", hub.active!.orch.tree().length, "mode:", hub.activeMeta!.mode);
+await hub.stop();

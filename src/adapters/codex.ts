@@ -6,13 +6,23 @@ export function codexAdapter(bin = process.env.AGENT_COMPANY_CODEX_BIN ?? "codex
     verified: true,
     supportsResume: true,
     invoke(opts: RunOptions): Invocation {
-      const sandbox = opts.profile === "root" ? "read-only" : "workspace-write";
+      const engine = opts.engine;
+      const sandbox = opts.profile === "root" || engine?.permission === "readonly" ? "read-only" : "workspace-write";
       const args = ["exec"];
       if (opts.sessionId) args.push("resume", opts.sessionId);
       args.push("--json", "--skip-git-repo-check", "--ignore-user-config");
       args.push("-c", `sandbox_mode="${sandbox}"`, "-c", 'approval_policy="never"');
       if (opts.mcpUrl) args.push("-c", `mcp_servers.orch.url=${JSON.stringify(opts.mcpUrl)}`);
-      if (opts.model) args.push("-m", opts.model);
+      if (engine?.allowWeb && sandbox === "workspace-write") args.push("-c", "sandbox_workspace_write.network_access=true");
+      for (const s of engine?.mcpServers ?? []) {
+        if (s.url) args.push("-c", `mcp_servers.${s.name}.url=${JSON.stringify(s.url)}`);
+        else {
+          args.push("-c", `mcp_servers.${s.name}.command=${JSON.stringify(s.command)}`);
+          if (s.args?.length) args.push("-c", `mcp_servers.${s.name}.args=${JSON.stringify(s.args)}`);
+        }
+      }
+      const model = opts.model || engine?.model;
+      if (model) args.push("-m", model);
       return { cmd: bin, args, env: opts.env ?? {}, stdin: opts.prompt };
     },
     parseLine(line: string): AdapterEvent[] {
