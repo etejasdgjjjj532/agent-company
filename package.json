@@ -11,6 +11,7 @@
     "bin",
     "dist",
     "src",
+    "scripts/build.mjs",
     "README.md",
     "LICENSE"
   ],
