@@ -4,3 +4,6 @@ dist/
 .env.*
 .orch/
 *.log
+apps/desktop/node_modules/
+apps/desktop/core/
+apps/desktop/dist-app/

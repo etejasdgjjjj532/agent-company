@@ -67,7 +67,7 @@ test("web: serves the page, sets a cookie, and the cookie authorises the API", a
   await withWeb(async ({ base, token }) => {
     const page = await fetch(`${base}/?t=${token}`);
     assert.equal(page.status, 200);
-    assert.match(await page.text(), /agent-company/);
+    assert.match(await page.text(), /Agent Company/);
     const cookie = (page.headers.get("set-cookie") ?? "").split(";")[0];
     assert.match(cookie, /^ac_token=/);
     const state = await fetch(`${base}/api/state`, { headers: { cookie } });

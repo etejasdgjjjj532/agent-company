@@ -1,0 +1,21 @@
+{
+  "name": "agent-company-desktop",
+  "productName": "Agent Company",
+  "version": "0.1.0",
+  "description": "Desktop app for Agent Company",
+  "private": true,
+  "type": "module",
+  "main": "main.mjs",
+  "author": "agent-company contributors",
+  "license": "MIT",
+  "scripts": {
+    "prepare-core": "node ../../scripts/build.mjs && node scripts/copy-core.mjs",
+    "start": "npm run prepare-core && node scripts/ensure-electron.mjs && electron .",
+    "dist": "npm run prepare-core && electron-builder",
+    "dist:dir": "npm run prepare-core && electron-builder --dir"
+  },
+  "devDependencies": {
+    "electron": "^45.2.1",
+    "electron-builder": "^26.18.0"
+  }
+}

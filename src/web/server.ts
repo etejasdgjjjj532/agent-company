@@ -1,5 +1,5 @@
 import { randomBytes, timingSafeEqual } from "node:crypto";
-import { existsSync, readFileSync, statSync } from "node:fs";
+import { existsSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -8,15 +8,25 @@ import type { OrchEvent } from "../core/events.ts";
 import { isGitRepo } from "../core/worktree.ts";
 import { detectClis, runDoctor } from "../doctor.ts";
 import type { Hub } from "../hub.ts";
-import { PROVIDER_PRESETS, isKnownEngine, engineName, parseEngine, toPublic } from "../core/providers.ts";
+import { PROVIDER_PRESETS, engineName, isKnownEngine } from "../core/providers.ts";
 import { describeCharter, heuristicTasks, makeAdvisor, type ScaleAdvice } from "../secretary.ts";
 
 const PUBLIC = new URL("./public/", import.meta.url);
-const ASSETS: Record<string, { file: string; type: string }> = {
-  "/": { file: "index.html", type: "text/html; charset=utf-8" },
-  "/app.js": { file: "app.js", type: "text/javascript; charset=utf-8" },
-  "/style.css": { file: "style.css", type: "text/css; charset=utf-8" },
+const TYPES: Record<string, string> = {
+  ".html": "text/html; charset=utf-8",
+  ".js": "text/javascript; charset=utf-8",
+  ".css": "text/css; charset=utf-8",
+  ".svg": "image/svg+xml",
+  ".png": "image/png",
 };
+const CSP = "default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self'; connect-src 'self'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'";
+
+function assetFor(pathname: string): { file: string; type: string } | null {
+  const name = pathname === "/" ? "index.html" : pathname.slice(1);
+  if (!/^[\w-]+\.(html|js|css|svg|png)$/.test(name)) return null;
+  if (!existsSync(fileURLToPath(new URL(name, PUBLIC)))) return null;
+  return { file: name, type: TYPES[name.slice(name.lastIndexOf("."))] };
+}
 
 export interface WebOptions {
   hub: Hub;
@@ -173,6 +183,7 @@ export async function startWebServer(options: WebOptions): Promise<WebHandle> {
       charter: orch ? { name: orch.charter.name, maxDepth: orch.charter.limits.maxDepth, maxConcurrent: orch.charter.maxConcurrent } : null,
       settings: hub.publicSettings(),
       sessions: hub.sessions(),
+      home: hub.home,
     };
   };
 
@@ -184,9 +195,9 @@ export async function startWebServer(options: WebOptions): Promise<WebHandle> {
     const setCookie = url.searchParams.get("t") ? { "set-cookie": `ac_token=${token}; Path=/; HttpOnly; SameSite=Strict` } : {};
 
     try {
-      if (req.method === "GET" && ASSETS[url.pathname]) {
-        const asset = ASSETS[url.pathname];
-        res.writeHead(200, { "content-type": asset.type, "cache-control": "no-store", ...setCookie });
+      const asset = req.method === "GET" ? assetFor(url.pathname) : null;
+      if (asset) {
+        res.writeHead(200, { "content-type": asset.type, "cache-control": "no-store", "content-security-policy": CSP, "x-content-type-options": "nosniff", ...setCookie });
         return void res.end(readFileSync(fileURLToPath(new URL(asset.file, PUBLIC))));
       }
       if (req.method === "GET") {
@@ -278,7 +289,7 @@ export async function startWebServer(options: WebOptions): Promise<WebHandle> {
           for (const cli of new Set([setup.rootCli, ...setup.childClis])) {
             if (!hub.adapters[cli]) return json(res, 400, { error: `${cli} のアダプタがありません` });
           }
-          if (body.saveCharter === true) await import("node:fs").then((fs) => fs.writeFileSync(join(info.resolved, "agent-company.toml"), serializeCharter(charter)));
+          if (body.saveCharter === true) writeFileSync(join(info.resolved, "agent-company.toml"), serializeCharter(charter));
           const meta = await hub.start({ repoDir: info.resolved, charter, name: typeof body.name === "string" && body.name ? body.name : undefined });
           const goal = setup.goal.trim();
           if (goal) void hub.active!.orch.chat(goal).catch((error) => hub.active?.orch.bus.emit("chat.error", "root", { message: String(error?.message ?? error) }));

@@ -1,477 +1,263 @@
-const nodes = new Map();
-const approvals = new Map();
-const messages = [];
-let selected = "root";
-let lastSeq = 0;
+import { GraphView } from "./graph.js";
+import { renderSession } from "./session.js";
+import { renderSettings } from "./settings.js";
+import { renderSetup } from "./setup.js";
+import { Store } from "./store.js";
+import { $, api, desktop, el, fmtNumber, fmtTime, setTerms, term } from "./util.js";
 
-const TERMS = {
-  tech: { root: "Root", chat: "Root との会話", child: "子" },
-  company: { root: "社長", chat: "社長との会話", child: "部下" },
+const ctx = {
+  state: { active: null, sessions: [], settings: { terms: "tech", recentProjects: [], providers: [] }, nodes: [], approvals: [], home: "" },
+  liveStore: new Store(),
+  liveId: null,
+  history: new Map(),
+  route: { name: "setup" },
+  cleanup: null,
+  graph: null,
+  sideTab: "graph",
+  selectedNode: "root",
+  toast,
+  async refresh() {
+    ctx.state = { ...ctx.state, ...(await api("/api/state")) };
+    setTerms(ctx.state.settings.terms);
+    drawSidebar();
+  },
+  go(route) {
+    ctx.route = route;
+    render();
+  },
+  rerender: () => render(),
+  toggleSide() {
+    $("app").classList.toggle("side-open");
+    ctx.graph?.resize();
+  },
+  selectNode(id) {
+    ctx.selectedNode = id;
+    ctx.sideTab = "node";
+    $("app").classList.add("side-open");
+    drawSide();
+  },
 };
-let terms = localStorage.getItem("ac-terms") === "company" ? "company" : "tech";
 
-const $ = (id) => document.getElementById(id);
-const canvas = $("graph");
-const ctx = canvas.getContext("2d");
-const view = { k: 1, x: 0, y: 0 };
-const css = {};
-let W = 800;
-let H = 600;
-let hover = null;
-let dragging = null;
-let panning = null;
-let moved = false;
-let frame = 0;
-
-function readCss() {
-  const s = getComputedStyle(document.documentElement);
-  for (const key of ["edge", "text", "muted", "c-root", "c-run", "c-done", "c-pending", "c-failed", "c-stopped", "c-approval"]) {
-    css[key] = s.getPropertyValue(`--${key}`).trim();
-  }
+function toast(message, bad = false) {
+  const node = el("div", { class: `toast${bad ? " bad" : ""}` }, message);
+  $("toasts").append(node);
+  setTimeout(() => node.remove(), bad ? 6000 : 3000);
 }
 
-function resize() {
-  const dpr = window.devicePixelRatio || 1;
-  const rect = canvas.getBoundingClientRect();
-  W = rect.width;
-  H = rect.height;
-  canvas.width = Math.max(1, Math.floor(W * dpr));
-  canvas.height = Math.max(1, Math.floor(H * dpr));
+function drawSidebar() {
+  const box = $("sessions");
+  const { sessions, active } = ctx.state;
+  const currentId = ctx.route.name === "session" ? ctx.route.id : null;
+  const items = sessions.map((s) =>
+    el("button", { class: `session-item${s.id === currentId ? " selected" : ""}`, onclick: () => ctx.go({ name: "session", id: s.id }), title: s.repoDir },
+      el("span", { class: `dot${s.active ? " active" : ""}` }),
+      el("span", { class: "name" }, s.name),
+      el("span", { class: "muted small" }, fmtTime(s.startedAt))));
+  box.replaceChildren(el("h3", {}, term("session")), ...(items.length ? items : [el("div", { class: "muted small", style: "padding:4px 8px" }, "まだありません")]));
+  $("engine-state").textContent = active ? `実行中: ${active.name}` : "";
 }
 
-function upsert(data, task) {
-  if (!data) return null;
-  let node = nodes.get(data.id);
-  if (!node) {
-    const parent = nodes.get(data.parentId);
-    const angle = Math.random() * Math.PI * 2;
-    node = {
-      log: [],
-      x: (parent ? parent.x : 0) + Math.cos(angle) * 40,
-      y: (parent ? parent.y : 0) + Math.sin(angle) * 40,
-      vx: 0,
-      vy: 0,
-    };
-    nodes.set(data.id, node);
-  }
-  Object.assign(node, data);
-  if (task) node.task = task;
-  return node;
+async function loadHistory(id) {
+  if (ctx.history.has(id)) return ctx.history.get(id);
+  const { events, meta } = await api(`/api/sessions/${id}/events`);
+  const store = new Store();
+  for (const event of events) store.apply(event);
+  const entry = { store, meta };
+  ctx.history.set(id, entry);
+  return entry;
 }
 
-function pushLog(node, kind, text) {
-  if (!node) return;
-  node.log.push({ kind, text });
-  if (node.log.length > 300) node.log.shift();
-}
-
-function apply(event) {
-  lastSeq = Math.max(lastSeq, event.seq);
-  const d = event.data || {};
-  const node = nodes.get(event.nodeId);
-  switch (event.type) {
-    case "node.created":
-      upsert(d.node, d.task);
-      break;
-    case "node.status":
-      if (node) {
-        node.status = d.status;
-        node.error = d.error;
-        if (d.attempt) node.attempts = d.attempt;
-      }
-      break;
-    case "node.usage":
-      if (node) Object.assign(node, { inputTokens: d.inputTokens, outputTokens: d.outputTokens, costUsd: d.costUsd });
-      break;
-    case "node.output":
-      pushLog(node, d.kind === "tool" ? "tool" : "text", d.kind === "tool" ? `[${d.name}] ${d.text}` : d.text);
-      break;
-    case "node.retry":
-      pushLog(node, "tool", `retry after attempt ${d.attempt}: ${d.error || ""}`);
-      break;
-    case "node.warning":
-      pushLog(node, "tool", d.message);
-      break;
-    case "node.user_intervention":
-      pushLog(node, "text", `(ユーザーからの直接指示) ${d.text}`);
-      break;
-    case "chat.user":
-      messages.push({ role: "user", text: d.text });
-      break;
-    case "chat.reply":
-      messages.push({ role: "root", text: d.text });
-      break;
-    case "chat.error":
-      messages.push({ role: "err", text: d.message });
-      break;
-    case "approval.requested":
-      approvals.set(d.id, { id: d.id, nodeId: event.nodeId, description: d.description });
-      break;
-    case "approval.resolved":
-      approvals.delete(d.id);
-      break;
-    default:
-      return;
-  }
-  dirty = true;
-}
-
-let dirty = true;
-
-function recount() {
-  for (const node of nodes.values()) node.childCount = 0;
-  for (const node of nodes.values()) {
-    const parent = nodes.get(node.parentId);
-    if (parent) parent.childCount++;
-  }
-}
-
-function radius(node) {
-  return 5 + Math.sqrt(node.childCount || 0) * 3.2 + (node.id === "root" ? 4 : 0);
-}
-
-function colorOf(node) {
-  if (node.id === "root" && node.status !== "running") return css["c-root"];
-  switch (node.status) {
-    case "running": return css["c-run"];
-    case "done": return css["c-done"];
-    case "failed": return css["c-failed"];
-    case "stopped": return css["c-stopped"];
-    default: return css["c-pending"];
-  }
-}
-
-function needsApproval(id) {
-  for (const a of approvals.values()) if (a.nodeId === id) return true;
-  return false;
-}
-
-function step() {
-  const list = [...nodes.values()];
-  for (const a of list) {
-    for (const b of list) {
-      if (a === b) continue;
-      const dx = a.x - b.x;
-      const dy = a.y - b.y;
-      const d2 = dx * dx + dy * dy + 0.5;
-      const f = 1400 / d2;
-      a.vx += dx * f * 0.05;
-      a.vy += dy * f * 0.05;
-    }
-    a.vx -= a.x * 0.006;
-    a.vy -= a.y * 0.006;
-    const parent = nodes.get(a.parentId);
-    if (parent) {
-      const dx = parent.x - a.x;
-      const dy = parent.y - a.y;
-      const d = Math.sqrt(dx * dx + dy * dy) + 0.01;
-      const k = (d - 70) * 0.02;
-      a.vx += (dx / d) * k;
-      a.vy += (dy / d) * k;
-      parent.vx -= (dx / d) * k;
-      parent.vy -= (dy / d) * k;
-    }
-  }
-  for (const a of list) {
-    if (a === dragging) continue;
-    a.vx *= 0.8;
-    a.vy *= 0.8;
-    a.x += a.vx;
-    a.y += a.vy;
-  }
-}
-
-function related() {
-  const target = hover || nodes.get(selected);
-  if (!target || !hover) return null;
-  const set = new Set([target.id]);
-  if (target.parentId) set.add(target.parentId);
-  for (const n of nodes.values()) if (n.parentId === target.id) set.add(n.id);
-  return set;
-}
-
-function draw(t) {
-  frame++;
-  if (frame % 60 === 1) readCss();
-  step();
-  const dpr = window.devicePixelRatio || 1;
-  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-  ctx.clearRect(0, 0, W, H);
-  ctx.save();
-  ctx.translate(W / 2 + view.x, H / 2 + view.y);
-  ctx.scale(view.k, view.k);
-  const rel = related();
-  ctx.lineWidth = 1 / view.k;
-  for (const n of nodes.values()) {
-    const p = nodes.get(n.parentId);
-    if (!p) continue;
-    ctx.globalAlpha = !rel || (rel.has(n.id) && rel.has(p.id)) ? 1 : 0.12;
-    ctx.strokeStyle = css.edge;
-    ctx.beginPath();
-    ctx.moveTo(p.x, p.y);
-    ctx.lineTo(n.x, n.y);
-    ctx.stroke();
-    if (n.status === "running") {
-      const u = (t / 1600 + n.id.length * 0.13) % 1;
-      ctx.fillStyle = css["c-run"];
-      ctx.beginPath();
-      ctx.arc(p.x + (n.x - p.x) * u, p.y + (n.y - p.y) * u, 2 / view.k + 1, 0, 6.283);
-      ctx.fill();
-    }
-  }
-  for (const n of nodes.values()) {
-    const on = !rel || rel.has(n.id);
-    const r = radius(n);
-    ctx.globalAlpha = on ? 1 : 0.15;
-    if (n.status === "running") {
-      ctx.strokeStyle = css["c-run"];
-      ctx.globalAlpha *= 0.35;
-      ctx.beginPath();
-      ctx.arc(n.x, n.y, r + 3 + 2 * Math.sin(t / 300), 0, 6.283);
-      ctx.stroke();
-      ctx.globalAlpha = on ? 1 : 0.15;
-    }
-    if (needsApproval(n.id)) {
-      ctx.strokeStyle = css["c-approval"];
-      ctx.lineWidth = 2.5 / view.k;
-      ctx.globalAlpha *= 0.3 + 0.7 * Math.abs(Math.sin(t / 350));
-      ctx.beginPath();
-      ctx.arc(n.x, n.y, r + 5, 0, 6.283);
-      ctx.stroke();
-      ctx.lineWidth = 1 / view.k;
-      ctx.globalAlpha = on ? 1 : 0.15;
-    }
-    ctx.fillStyle = colorOf(n);
-    ctx.beginPath();
-    ctx.arc(n.x, n.y, r, 0, 6.283);
-    ctx.fill();
-    if (n.id === selected) {
-      ctx.strokeStyle = css.text;
-      ctx.lineWidth = 1.5 / view.k;
-      ctx.beginPath();
-      ctx.arc(n.x, n.y, r + 2.5, 0, 6.283);
-      ctx.stroke();
-      ctx.lineWidth = 1 / view.k;
-    }
-  }
-  ctx.globalAlpha = 1;
-  ctx.font = `${12 / Math.max(view.k, 0.6)}px system-ui, sans-serif`;
-  ctx.textAlign = "center";
-  for (const n of nodes.values()) {
-    if (!(n.id === "root" || n.id === selected || (hover && (n === hover || (rel && rel.has(n.id)))))) continue;
-    ctx.fillStyle = css.text;
-    ctx.fillText(label(n), n.x, n.y - radius(n) - 7);
-  }
-  ctx.restore();
-  if (dirty) {
-    dirty = false;
-    renderPanels();
-  }
-  requestAnimationFrame(draw);
-}
-
-function label(n) {
-  return n.id === "root" ? TERMS[terms].root : `${n.id} ${n.role || ""}`.trim();
-}
-
-function toWorld(clientX, clientY) {
-  const rect = canvas.getBoundingClientRect();
-  return { x: (clientX - rect.left - W / 2 - view.x) / view.k, y: (clientY - rect.top - H / 2 - view.y) / view.k };
-}
-
-function nodeAt(clientX, clientY) {
-  const p = toWorld(clientX, clientY);
-  let found = null;
-  for (const n of nodes.values()) {
-    const r = radius(n) + 5;
-    if ((n.x - p.x) ** 2 + (n.y - p.y) ** 2 <= r * r) found = n;
-  }
-  return found;
-}
-
-canvas.addEventListener("pointerdown", (e) => {
-  canvas.setPointerCapture(e.pointerId);
-  moved = false;
-  const n = nodeAt(e.clientX, e.clientY);
-  if (n) dragging = n;
-  else panning = { x: e.clientX, y: e.clientY, vx: view.x, vy: view.y };
-});
-canvas.addEventListener("pointermove", (e) => {
-  if (dragging) {
-    const p = toWorld(e.clientX, e.clientY);
-    dragging.x = p.x;
-    dragging.y = p.y;
-    dragging.vx = dragging.vy = 0;
-    moved = true;
-  } else if (panning) {
-    view.x = panning.vx + (e.clientX - panning.x);
-    view.y = panning.vy + (e.clientY - panning.y);
-    moved = true;
+function drawSide() {
+  const side = $("side");
+  const store = currentStore();
+  const tabs = el("div", { class: "side-tabs" },
+    [["graph", "グラフ"], ["node", "ノード"], ["info", "設計"]].map(([key, label]) =>
+      el("button", { class: `tab${ctx.sideTab === key ? " active" : ""}`, onclick: () => { ctx.sideTab = key; drawSide(); } }, label)),
+    el("span", { class: "grow" }), el("button", { class: "small ghost", onclick: () => ctx.toggleSide(), "aria-label": "閉じる" }, "×"));
+  const body = el("div", { class: "side-body" });
+  side.replaceChildren(tabs, body);
+  if (!store) return;
+  if (ctx.sideTab === "graph") {
+    const canvas = el("canvas", { "aria-label": "エージェントのグラフ" });
+    body.append(el("div", { class: "graph-wrap" }, canvas, el("div", { class: "legend" },
+      [["run", "実行中"], ["done", "完了"], ["pending", "待機"], ["failed", "失敗"], ["approval", "承認待ち"]].map(([c, l]) => el("span", {}, el("i", { class: `i-${c}` }), l)))));
+    ctx.graph?.stop();
+    ctx.graph = new GraphView(canvas, store, (id) => { ctx.selectedNode = id; });
+    ctx.graph.selected = ctx.selectedNode;
+    ctx.graph.start();
   } else {
-    hover = nodeAt(e.clientX, e.clientY);
-    canvas.style.cursor = hover ? "pointer" : "grab";
-  }
-});
-canvas.addEventListener("pointerup", () => {
-  if (dragging && !moved) {
-    selected = dragging.id;
-    dirty = true;
-  }
-  dragging = null;
-  panning = null;
-});
-canvas.addEventListener("pointerleave", () => {
-  hover = null;
-});
-canvas.addEventListener("wheel", (e) => {
-  e.preventDefault();
-  const before = toWorld(e.clientX, e.clientY);
-  view.k = Math.min(4, Math.max(0.25, view.k * (e.deltaY < 0 ? 1.1 : 1 / 1.1)));
-  const rect = canvas.getBoundingClientRect();
-  view.x = e.clientX - rect.left - W / 2 - before.x * view.k;
-  view.y = e.clientY - rect.top - H / 2 - before.y * view.k;
-}, { passive: false });
-canvas.addEventListener("dblclick", () => {
-  view.k = 1;
-  view.x = 0;
-  view.y = 0;
-});
-
-function el(tag, props = {}, ...children) {
-  const node = Object.assign(document.createElement(tag), props);
-  for (const child of children) node.append(child);
-  return node;
-}
-
-async function post(url, body) {
-  const res = await fetch(url, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
-  if (!res.ok) {
-    const info = await res.json().catch(() => ({}));
-    messages.push({ role: "err", text: info.error || `request failed (${res.status})` });
-    dirty = true;
+    ctx.graph?.stop();
+    ctx.graph = null;
+    if (ctx.sideTab === "node") renderNodeDetail(body, store);
+    else renderInfo(body, store);
   }
 }
 
-function renderPanels() {
-  recount();
-  $("chat-title").textContent = TERMS[terms].chat;
-  const list = $("messages");
-  const stick = list.scrollTop + list.clientHeight >= list.scrollHeight - 30;
-  list.replaceChildren(...messages.map((m) => el("div", { className: `msg ${m.role}`, textContent: m.text })));
-  if (stick) list.scrollTop = list.scrollHeight;
-
-  const all = [...nodes.values()];
-  const running = all.filter((n) => n.status === "running").length;
-  const tokens = all.reduce((s, n) => s + (n.inputTokens || 0) + (n.outputTokens || 0), 0);
-  const known = all.filter((n) => typeof n.costUsd === "number");
-  const cost = known.length ? `$${known.reduce((s, n) => s + n.costUsd, 0).toFixed(2)}${known.length < all.length ? " (一部不明)" : ""}` : "不明";
-  $("summary").textContent = `ノード ${all.length} / 実行中 ${running} / トークン ${tokens.toLocaleString()} / コスト ${cost}`;
-
-  const box = $("approvals");
-  box.replaceChildren(
-    ...[...approvals.values()].map((a) =>
-      el("div", { className: "card approval" },
-        el("h2", { textContent: `承認が必要 (${a.nodeId})` }),
-        el("pre", { textContent: a.description }),
-        el("div", { className: "row" },
-          el("button", { className: "primary", textContent: "承認", onclick: () => post(`/api/approval/${a.id}`, { approved: true }) }),
-          el("button", { textContent: "却下", onclick: () => post(`/api/approval/${a.id}`, { approved: false }) }),
-        ),
-      ),
-    ),
-  );
-  renderDetail();
-}
-
-function renderDetail() {
-  const box = $("detail");
-  const n = nodes.get(selected);
-  if (!n) return;
-  const kv = el("dl", { className: "kv" });
-  const add = (k, v) => kv.append(el("dt", { textContent: k }), el("dd", { textContent: String(v ?? "-") }));
-  add("ID", n.id === "root" ? TERMS[terms].root : n.id);
-  add("CLI", n.cli);
+function renderNodeDetail(body, store) {
+  const n = store.nodes.get(ctx.selectedNode) ?? store.nodes.get("root");
+  if (!n) return void body.append(el("div", { class: "detail muted" }, "ノードがありません"));
+  const kv = el("dl", { class: "kv" });
+  const add = (k, v) => kv.append(el("dt", {}, k), el("dd", {}, String(v ?? "-")));
+  add("ID", n.id === "root" ? "Root" : n.id);
+  add("エンジン", n.cli);
   add("状態", n.status + (n.attempts > 1 ? ` (試行 ${n.attempts})` : ""));
   add("深さ", n.depth);
-  add("トークン", ((n.inputTokens || 0) + (n.outputTokens || 0)).toLocaleString());
+  add("トークン", fmtNumber((n.inputTokens || 0) + (n.outputTokens || 0)));
   add("コスト", typeof n.costUsd === "number" ? `$${n.costUsd.toFixed(3)}` : "不明");
   if (n.branch) add("ブランチ", n.branch);
   if (n.error) add("エラー", n.error);
-  const log = el("div", { id: "log" });
-  for (const line of n.log.slice(-60)) log.append(el("div", { className: line.kind, textContent: line.text }));
-  const parts = [el("h2", { textContent: `${label(n)} の詳細` }), el("p", { className: "muted", textContent: n.task || "" }), kv, log];
-  if (n.status === "running" || n.status === "pending") {
-    parts.push(el("button", { textContent: "停止", onclick: () => post(`/api/node/${encodeURIComponent(n.id)}/stop`, {}) }));
-  }
-  if (n.id !== "root") {
+  const log = el("div", { class: "log" }, n.log.slice(-80).map((line) => el("div", { class: line.kind }, line.text)));
+  const parts = [el("h2", {}, n.id === "root" ? "Root" : `${n.id} ${n.role || ""}`), el("p", { class: "muted" }, n.task || ""), kv, log];
+  const readOnly = ctx.route.name === "session" && ctx.route.id !== ctx.state.active?.id;
+  if (!readOnly && (n.status === "running" || n.status === "pending")) parts.push(el("button", { class: "small", onclick: () => api(`/api/node/${encodeURIComponent(n.id)}/stop`, {}).catch((e) => toast(e.message, true)) }, "このノードを停止"));
+  if (!readOnly && n.id !== "root") {
     const input = el("input", { type: "text", placeholder: "このノードへ直接指示 (完了後に送れます)" });
-    const form = el("form", { onsubmit: (e) => {
+    parts.push(el("form", { class: "row", style: "margin-top:10px", onsubmit: async (e) => {
       e.preventDefault();
       const text = input.value.trim();
       if (!text) return;
       input.value = "";
-      post(`/api/node/${encodeURIComponent(n.id)}/message`, { text });
-    } }, input, el("button", { type: "submit", textContent: "送る" }));
-    parts.push(form);
+      try {
+        await api(`/api/node/${encodeURIComponent(n.id)}/message`, { text });
+      } catch (error) {
+        toast(error.message, true);
+      }
+    } }, el("div", { class: "grow" }, input), el("button", { type: "submit" }, "送る")));
   }
-  const keepLog = box.querySelector("#log");
-  const stickLog = keepLog ? keepLog.scrollTop + keepLog.clientHeight >= keepLog.scrollHeight - 20 : true;
-  const typed = box.querySelector("input")?.value;
-  box.replaceChildren(...parts);
-  const newInput = box.querySelector("input");
-  if (newInput && typed) newInput.value = typed;
-  if (stickLog) log.scrollTop = log.scrollHeight;
+  body.append(el("div", { class: "detail" }, parts));
+  log.scrollTop = log.scrollHeight;
 }
 
-$("chat-form").addEventListener("submit", (e) => {
-  e.preventDefault();
-  const input = $("chat-input");
-  const text = input.value.trim();
-  if (!text) return;
-  input.value = "";
-  post("/api/chat", { text });
-});
-$("chat-input").addEventListener("keydown", (e) => {
-  if (e.key === "Enter" && !e.shiftKey && !e.isComposing && e.keyCode !== 229) {
-    e.preventDefault();
-    $("chat-form").requestSubmit();
+function renderInfo(body, store) {
+  const charter = ctx.state.charter;
+  body.append(el("div", { class: "detail" },
+    el("h2", {}, "組織の設計"),
+    el("dl", { class: "kv" },
+      el("dt", {}, "最大の深さ"), el("dd", {}, String(charter?.maxDepth ?? "-")),
+      el("dt", {}, "同時実行"), el("dd", {}, String(charter?.maxConcurrent ?? "-")),
+      el("dt", {}, "ノード数"), el("dd", {}, String(store.nodes.size))),
+    el("p", { class: "muted small" }, "深さや同時実行数は、新しいセッションの作成画面で変えられます。")));
+}
+
+function currentStore() {
+  if (ctx.route.name !== "session") return null;
+  if (ctx.route.id === ctx.state.active?.id) return ctx.liveStore;
+  return ctx.history.get(ctx.route.id)?.store ?? null;
+}
+
+async function render() {
+  try {
+    await renderRoute();
+  } catch (error) {
+    console.error(error);
+    $("main").replaceChildren(el("div", { class: "page" }, el("div", { class: "notice bad" }, `画面の表示に失敗しました: ${error.message}`)));
   }
-});
-$("terms").value = terms;
-$("terms").addEventListener("change", (e) => {
-  terms = e.target.value === "company" ? "company" : "tech";
-  localStorage.setItem("ac-terms", terms);
-  dirty = true;
-});
+}
+
+async function renderRoute() {
+  ctx.cleanup?.();
+  ctx.cleanup = null;
+  const main = $("main");
+  const route = ctx.route;
+  $("app").classList.toggle("side-open", route.name === "session");
+  drawSidebar();
+  if (route.name === "setup") {
+    ctx.graph?.stop();
+    $("side").replaceChildren();
+    return void (await renderSetup(main, ctx));
+  }
+  if (route.name === "settings") {
+    ctx.graph?.stop();
+    $("side").replaceChildren();
+    return void (await renderSettings(main, ctx, route.tab));
+  }
+  const isLive = route.id === ctx.state.active?.id;
+  let store = ctx.liveStore;
+  let meta = ctx.state.active;
+  if (!isLive) {
+    try {
+      const entry = await loadHistory(route.id);
+      store = entry.store;
+      meta = entry.meta ?? ctx.state.sessions.find((s) => s.id === route.id);
+    } catch (error) {
+      toast(error.message, true);
+      return void ctx.go({ name: "setup" });
+    }
+  }
+  const sessionCtx = { ...ctx, store, readOnly: !isLive, meta };
+  ctx.cleanup = renderSession(main, sessionCtx);
+  drawSide();
+}
+
+function bindShell() {
+  $("new-session").addEventListener("click", () => ctx.go({ name: "setup" }));
+  $("open-settings").addEventListener("click", () => ctx.go({ name: "settings", tab: "general" }));
+  window.addEventListener("keydown", (e) => {
+    if ((e.ctrlKey || e.metaKey) && e.key === "n") {
+      e.preventDefault();
+      ctx.go({ name: "setup" });
+    } else if ((e.ctrlKey || e.metaKey) && e.key === ",") {
+      e.preventDefault();
+      ctx.go({ name: "settings", tab: "general" });
+    }
+  });
+  desktop?.onMenu?.((action) => {
+    if (action === "new-session") ctx.go({ name: "setup" });
+    else if (action === "settings") ctx.go({ name: "settings", tab: "general" });
+  });
+}
+
+function notifyApproval(description) {
+  const text = description.split("\n")[0];
+  if (desktop?.notify) desktop.notify("承認が必要です", text);
+  else if (document.hidden && "Notification" in window && Notification.permission === "granted") new Notification("承認が必要です", { body: text });
+}
 
 function connect() {
-  const source = new EventSource(`/events?since=${lastSeq}`);
-  source.onopen = () => $("conn").classList.remove("off");
-  source.onmessage = (message) => apply(JSON.parse(message.data));
+  const source = new EventSource(`/events?since=${ctx.liveStore.lastSeq}`);
+  source.addEventListener("hub", async (message) => {
+    const { active } = JSON.parse(message.data);
+    const changed = (active?.id ?? null) !== ctx.liveId;
+    ctx.liveId = active?.id ?? null;
+    if (changed) ctx.liveStore = new Store();
+    await ctx.refresh();
+    ctx.liveStore.loadSnapshot(ctx.state);
+    if (changed) {
+      if (active) ctx.go({ name: "session", id: active.id });
+      else if (ctx.route.name === "session" && ctx.route.id !== active?.id) render();
+      else render();
+    }
+  });
+  source.onmessage = (message) => {
+    const event = JSON.parse(message.data);
+    ctx.liveStore.apply(event);
+    if (event.type === "approval.requested") notifyApproval(event.data.description);
+    if (event.type === "node.created" || event.type === "node.status") {
+      if (!ctx.refreshPending) {
+        ctx.refreshPending = true;
+        setTimeout(() => { ctx.refreshPending = false; ctx.refresh(); }, 600);
+      }
+    }
+  };
   source.onerror = () => {
-    $("conn").classList.add("off");
     source.close();
     setTimeout(connect, 2000);
   };
 }
 
-async function start() {
-  readCss();
-  resize();
-  window.addEventListener("resize", resize);
-  try {
-    const res = await fetch("/api/tree");
-    if (res.ok) {
-      const info = await res.json();
-      for (const n of info.nodes) upsert(n);
-      for (const a of info.approvals) approvals.set(a.id, a);
-      if (info.charter?.name) $("title").textContent = info.charter.name;
-    }
-  } catch {
-    // the event stream will fill the state in
+async function boot() {
+  bindShell();
+  await ctx.refresh();
+  if (ctx.state.active) {
+    ctx.liveId = ctx.state.active.id;
+    ctx.route = { name: "session", id: ctx.state.active.id };
+  } else if (ctx.state.sessions.length === 0) {
+    ctx.route = { name: "setup" };
   }
   connect();
-  requestAnimationFrame(draw);
+  await render();
 }
 
-start();
+boot().catch((error) => {
+  document.body.append(el("pre", { class: "notice bad" }, `起動に失敗しました: ${error.message}`));
+});
