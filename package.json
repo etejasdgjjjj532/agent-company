@@ -1,6 +1,6 @@
 {
   "name": "agent-company",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Tree-structured orchestrator for coding agent CLIs (Claude Code, Codex, Gemini CLI, OpenCode)",
   "type": "module",
   "license": "MIT",
