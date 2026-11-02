@@ -2,139 +2,101 @@
 
 ## 目的
 
-複数のエージェントCLIを階層状に束ね、ユーザーは最上位のエージェント(Root)とだけ会話する。
+複数のエージェント CLI と GPT 互換 API を階層状に束ね、ユーザーは最上位のエージェント (Root) とだけ会話する。
 
 ## 全体像
 
 ```
-会長(ユーザー)
-   │ ① 設立前の相談
-   ▼
- 秘書 (Setup Agent) ── 組織設計を提案 ──► charter.toml
-                                          │ ② 承認
-                                          ▼
-                              orchd が charter から組織を設立
-                                          │
-会長 ◄──── ③ 運用中の会話 ────► 社長 (Root Agent)
-                                          ├ 子
-                                          │  └ 孫
-                                          │     └ ひ孫 ...
+Electron シェル (メニュー、フォルダ選択、通知、ウィンドウ状態)
+   └─ 画面 (HTML / JS、依存なし)  ←  HTTP + SSE (127.0.0.1、トークン認証、CSP)
+          └─ Hub (設定、プロバイダ、セッション一覧)
+                └─ Session ── Orchestrator ──┬─ Registry (ノードツリー)
+                                              ├─ Limits (深さ / 子の数 / 総数 / 予算)
+                                              ├─ MCP サーバー (ノードごとのトークンで出し分け)
+                                              ├─ Worktree (ノードごとに git worktree)
+                                              └─ Adapter (claude / codex / gemini / opencode / api:*)
 ```
 
-| | 秘書 (Setup Agent) | Root Agent |
-|---|---|---|
-| いつ | 設立前、組織改編のとき | 運用中ずっと |
-| 仕事 | 目的を聞いて組織設計を提案する | 設計された組織で仕事を進める |
-| 触るもの | 設定と charter のみ(コードは触らない) | リポジトリと配下のエージェント |
-| 権限 | 読み取りと設定ファイル生成のみ | 子の生成、指示、統合 |
+## 主な部品
 
-## コンポーネント
+| 部品 | 役割 |
+|---|---|
+| `core/limits.ts` | 子を作ってよいかの検査 |
+| `core/charter.ts` | 設計書 (プリセット、検証、TOML の読み書き) |
+| `core/providers.ts` | GPT 互換 API の登録と opencode 設定の生成 |
+| `core/platform.ts` | OS 差 (保存先、Windows のコマンド解決、プロセスツリー停止、ブラウザ起動) |
+| `adapters/*` | CLI ごとの起動方法と出力の読み取り。プロンプトは標準入力で渡す |
+| `mcp/http.ts` | 各エージェントに渡す制御ツール (spawn_child, wait_children, report など) |
+| `orchestrator.ts` | ノードの生成・実行・再試行・統合・承認 |
+| `hub.ts` | セッションと設定の管理 |
+| `web/server.ts` | 画面の配信、API、イベントストリーム |
+| `secretary.ts` | 設立前の相談 (規模のおすすめ、設計書の作成) |
 
-```
-orchd (常駐デーモン)
- ├ Node Registry   ツリーの現在状態(唯一の正)
- ├ Event Bus       spawn / start / output / wait / approve / done / fail / cost
- ├ Limits          深さ・子の数・総数・予算の強制
- ├ Adapters        CLIごとの差を吸収 (claude, codex, gemini, opencode)
- ├ MCP server      各エージェントに渡す制御ツール(ノードごとに絞る)
- └ Monitor         イベントを購読して描画 (Web グラフビュー / TUI / Replay)
-```
-
-### 原則
+## 原則
 
 - ツリーは LLM ではなくデーモンが管理する。LLM は「子を作りたい」と頼むだけで、上限検査・起動・記録はデーモンが行う。
-- `can_spawn = false` の階層には `spawn_child` ツール自体を渡さない。見えないものは呼べない。
-- 通信は共有コンテキストではなくメッセージ渡し。子は `result.md` と短い要約だけを返す。結果は階層ごとに圧縮して上へ上げる。
-- ノードごとに git worktree を作る。完了したノードは変更を統合した後に掃除する。
-- 子の承認要求は Root を経由してユーザーに集約する。非可逆操作は必ずユーザー承認。
+- `can_spawn = false` の階層には `spawn_child` ツール自体を渡さない。
+- 通信は共有コンテキストではなくメッセージ渡し。子の結果は 2000 文字以内に要約して親へ返す。
+- 子は自分の worktree でだけ書き込む。コミットはオーケストレーターが行う。
+- 統合は Root が提案し、ユーザーが承認したときだけ行う。承認待ちの間も MCP の呼び出しがタイムアウトしないよう、一定時間で「まだ未回答」と返し、再度の呼び出しで続きを処理する。
+- 全イベントを JSONL に記録する。書き込み前にキーやトークンらしい文字列を伏せる。
 
-## charter(組織設計書)
+## エンジンの名前
 
-秘書が会長と相談して作り、会長が承認する。人が読める TOML で、git に入れる。
+- CLI: `claude`, `codex`, `gemini`, `opencode`
+- GPT 互換 API: `api:<プロバイダID>` または `api:<プロバイダID>:<モデル>`。opencode に OpenAI 互換のプロバイダ設定を渡して実行する。
+
+## charter (設計書)
 
 ```toml
+name = "agent-company"
+
 [limits]
-max_depth       = 3     # 0=Root, 1=子, 2=孫, 3=ひ孫
-max_total_nodes = 12
-max_concurrent  = 4
+max_depth = 2
+max_total_nodes = 8
+max_concurrent = 3
+max_retries = 2
+max_node_minutes = 20
+max_total_tokens = 0   # 0 は無制限
 
 [root]
 cli = "claude"
 
-[level.1]
+[level.0]
 max_children = 4
-allowed_cli  = ["claude", "codex", "gemini", "opencode"]
-can_spawn    = true
+allowed_cli = ["claude"]
+can_spawn = true
+
+[level.1]
+max_children = 2
+allowed_cli = ["claude", "codex", "api:openrouter"]
+can_spawn = true
 
 [level.2]
-max_children = 3
-allowed_cli  = ["codex", "opencode"]
-can_spawn    = true
-
-[level.3]
 max_children = 0
-allowed_cli  = ["opencode"]
-can_spawn    = false
+allowed_cli = ["claude", "codex", "api:openrouter"]
+can_spawn = false
 ```
 
-### 起動時の選択(秘書が提示)
-
-- サブエージェントの数: おすすめ値(`min(独立サブタスク数, 同時実行上限, 予算から逆算した数)`)/ 少なめ / 数値入力 / おまかせ
-- 深さ: 子まで / 孫まで / ひ孫まで / 数値入力
-- 下位の自動増殖: 上限内は自動 / 増やすたびに確認
-
-## 制御ツール(MCP)
+## 制御ツール (MCP)
 
 | ツール | 渡す対象 |
 |---|---|
-| `report(result)`, `ask_parent(question)` | 全ノード |
-| `spawn_child(cli, role, task)`, `ask_child`, `list_children`, `stop_child` | `can_spawn = true` のノードのみ |
-| `get_tree_status`, `get_node_summary` | Root |
+| `report` | 全ノード |
+| `spawn_child`, `list_children`, `wait_children`, `stop_child`, `get_child_diff`, `merge_child` | `can_spawn = true` のノード |
+| `get_tree_status` | Root |
 
-`spawn_child` は、深さ・親の `max_children`・`max_total_nodes` を順に検査し、超えていればエラーを返す。
+`wait_children` の間は同時実行の枠を手放すので、親子が枠を取り合って止まることはない。
 
-## Adapter
+## 画面
 
-共通インターフェースは `start / send / events / stop`。最初は各CLIの非対話モードを使う。コマンドと出力形式は実装前に各CLIの最新ヘルプで確認する(未検証)。
+- 左: セッション一覧。中央: チャット (ツールの実行や子の完了も流れる)。右: グラフ / ノード詳細 / 設計。
+- 導入画面 (秘書): フォルダ、目的、エンジン、規模のおすすめ、組織の形のプレビュー。
+- 設定: 用語、GPT 互換 API の登録 (接続テストとモデルの取得)、環境の点検。
+- Obsidian のグラフビュー風の力学グラフ。実行中は脈動、承認待ちは点滅。
 
-| CLI | 想定する起動 |
-|---|---|
-| Claude Code | `claude -p --output-format stream-json` |
-| Codex | `codex exec --json` |
-| Gemini CLI | `gemini -p` |
-| OpenCode | `opencode run` |
+## 未実装
 
-## ビジュアライズ
-
-イベントバスを唯一のデータ源にして、Monitor が描画する。
-
-- Web: Obsidian のグラフビュー風の力学グラフ。ノードの大きさは子の数、色は状態、実行中は脈動と流れる点、承認待ちは点滅。ホバーで関連をハイライト、深さスライダー、ズームとパン。`127.0.0.1` のみで配信する。
-- TUI: ツリーと承認操作に絞った最小限の表示。
-- Replay: JSONL を時系列に流して過去セッションを再生する。
-
-## 安全
-
-- 上限は深さ・子の数・総数・予算(トークン/時間)の4種類。デーモンが強制する。
-- 全イベントを JSONL に記録し、再開できるようにする。
-- シークレットはログに残さない。各CLIの既存認証を使う。
-- 停止はノード単位とツリー全体の両方に対応する。
-- Web UI は認証なしで外部公開しない。
-
-## 技術選定
-
-- TypeScript で、デーモン・MCP・Web UI を統一する。
-- 作業対象は git リポジトリ前提。
-- 状態保存は JSONL(必要になれば SQLite)。
-
-## 段階
-
-1. **MVP**: orchd の骨組み(ノードツリー、イベントバス、JSONL、Limits)/ Adapter 2種(claude, codex)/ 秘書と charter 生成 / Web グラフビュー / Root 用 MCP ツール
-2. ネスト(孫以降)の動作確認、gemini と opencode の Adapter、承認の中継
-3. worktree のマージ支援、予算制御、再開、ACP Adapter
-
-## リスク
-
-- 深くするほどコストとレート制限が膨らむ。上限を最初から入れる。
-- worktree 分離でも、統合時に衝突する。
-- 非対話モードでは承認プロンプトを扱えないことがある。
-- CLIごとに挙動が違う。Adapter は薄く保つ。
+- 再開時に、途中だったノードを自動でやり直す機能
+- Gemini CLI の実機確認、Windows / macOS の実機確認
+- 署名付きインストーラ

@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Agent Company</title>
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+<div id="app">
+  <nav id="sidebar" aria-label="セッション">
+    <div class="brand"><span class="logo"></span><strong>Agent Company</strong></div>
+    <button id="new-session" class="primary wide">新しいセッション</button>
+    <div id="sessions" class="sessions"></div>
+    <div class="sidebar-foot">
+      <button id="open-settings" class="ghost wide">設定</button>
+      <div id="engine-state" class="muted small"></div>
+    </div>
+  </nav>
+  <main id="main"></main>
+  <aside id="side" aria-label="詳細"></aside>
+</div>
+<div id="toasts" aria-live="polite"></div>
+<script src="/app.js" type="module"></script>
+</body>
+</html>

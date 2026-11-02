@@ -1,0 +1,23 @@
+import { mkdirSync, mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { defaultAdapters } from "../src/adapters/index.ts";
+import { buildCharter } from "../src/core/charter.ts";
+import { Hub } from "../src/hub.ts";
+import { makeRepo } from "../test/helpers.ts";
+
+const [rootCli = "claude"] = process.argv.slice(2);
+const base = mkdtempSync(join(tmpdir(), "ac-chat-"));
+const repo = join(base, "repo");
+mkdirSync(repo);
+makeRepo(repo);
+const hub = new Hub({ adapters: defaultAdapters(), home: join(base, "home") });
+const meta = await hub.start({ repoDir: repo, charter: buildCharter({ rootCli, childClis: [rootCli], preset: "light" }) });
+const orch = hub.active!.orch;
+console.log("1>", (await orch.chat("Remember the secret number 7311. Reply only with: stored")).slice(0, 80));
+console.log("2>", (await orch.chat("What secret number did I ask you to remember? Reply with the number only.")).slice(0, 80));
+await hub.stop();
+const again = await hub.resume(meta.id);
+console.log("resumed:", again.active);
+console.log("3>", (await hub.active!.orch.chat("After the app restart: what was the secret number? Reply with the number only.")).slice(0, 80));
+await hub.stop();

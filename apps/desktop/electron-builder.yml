@@ -1,0 +1,25 @@
+appId: dev.agentcompany.desktop
+productName: Agent Company
+copyright: agent-company contributors
+directories:
+  output: dist-app
+  buildResources: build
+files:
+  - main.mjs
+  - preload.cjs
+  - package.json
+  - core/**/*
+asar: true
+mac:
+  category: public.app-category.developer-tools
+  target: [dmg, zip]
+win:
+  target: [nsis]
+nsis:
+  oneClick: true
+  perMachine: false
+  deleteAppDataOnUninstall: false
+linux:
+  category: Development
+  target: [AppImage, deb]
+  maintainer: agent-company contributors
