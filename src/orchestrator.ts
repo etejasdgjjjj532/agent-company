@@ -72,6 +72,7 @@ export class Orchestrator implements McpHost {
   private counters = new Map<string, number>();
   private runTag = randomBytes(3).toString("hex");
   private closed = false;
+  private links = new Set<string>();
   private approvalWaitMs: number;
   private mergeApprovals = new Map<string, { state: "pending" | "approved" | "declined"; promise: Promise<boolean> }>();
 
@@ -102,6 +103,7 @@ export class Orchestrator implements McpHost {
       costUsd: null,
       inbox: [],
       queued: [],
+      messages: [],
     });
     if (options.restore) this.restoreFrom(options.restore);
     else this.bus.emit("node.created", ROOT_ID, { node: this.view(ROOT_ID) });
@@ -187,6 +189,7 @@ export class Orchestrator implements McpHost {
     return [
       "You are the Root agent of a team of coding agents. The user talks only to you.",
       "Split the work into independent subtasks and delegate them with the MCP tools of server \"orch\" (spawn_child, wait_children, get_child_diff, merge_child, get_tree_status).",
+      "If sub-agents must coordinate, link them with link_children so they can send_message / read_messages to each other.",
       "Do not edit files yourself. After children finish, read their results, check get_child_diff, then call merge_child (it asks the user for approval).",
       this.limitsText(this.registry.get(ROOT_ID) as AgentNode),
       "Keep answers to the user short and concrete.",
@@ -201,6 +204,7 @@ export class Orchestrator implements McpHost {
       `You are a ${node.role} agent at depth ${node.depth} in a tree of coding agents.`,
       "Work only inside the current directory, which is your own git worktree. Do not use the network.",
       this.limitsText(node),
+      "If your parent linked you with siblings, you may use send_message and read_messages to coordinate with them.",
       "Do not run git commit, merge, checkout or branch commands: your changes are committed for you when you finish.",
       `When finished, reply with a concise summary (under 1500 characters): what you did, files changed, anything blocking. You may also call the report tool with that summary.`,
       "",
@@ -279,6 +283,7 @@ export class Orchestrator implements McpHost {
       costUsd: null,
       inbox: [],
       queued: [],
+      messages: [],
     };
     this.registry.add(node);
     this.bus.emit("node.created", id, { node: this.registry.view(node), task });
@@ -434,6 +439,7 @@ export class Orchestrator implements McpHost {
             costUsd: null,
             inbox: [],
             queued: [],
+            messages: [],
           });
           const index = Number(view.id.slice(view.id.lastIndexOf(".") + 1).replace(/^c/, ""));
           const parentId = view.parentId ?? ROOT_ID;
@@ -458,6 +464,9 @@ export class Orchestrator implements McpHost {
           break;
         case "node.result":
           if (node) node.result = d.result;
+          break;
+        case "node.linked":
+          for (const a of d.ids as string[]) for (const b of d.ids as string[]) if (a < b) this.links.add(`${a}|${b}`);
           break;
         default:
           break;
@@ -508,6 +517,20 @@ export class Orchestrator implements McpHost {
         inputSchema: { type: "object", properties: { result: { type: "string" } }, required: ["result"] },
       },
     ];
+    if (node.depth >= 1) {
+      tools.push(
+        {
+          name: "send_message",
+          description: "Send a short message to a sibling agent. Works only for siblings your parent has linked with you.",
+          inputSchema: { type: "object", properties: { to: { type: "string" }, text: { type: "string" } }, required: ["to", "text"] },
+        },
+        {
+          name: "read_messages",
+          description: "Read and clear messages other agents sent you.",
+          inputSchema: { type: "object", properties: {} },
+        },
+      );
+    }
     const level = this.charter.limits.levels[node.depth];
     if (!level?.canSpawn) return tools;
     const childClis = this.charter.limits.levels[node.depth + 1]?.allowedCli ?? [];
@@ -537,6 +560,11 @@ export class Orchestrator implements McpHost {
           type: "object",
           properties: { ids: { type: "array", items: { type: "string" } }, timeout_sec: { type: "number" } },
         },
+      },
+      {
+        name: "link_children",
+        description: "Allow your sub-agents to message each other directly (send_message / read_messages). Pass two or more of their ids.",
+        inputSchema: { type: "object", properties: { ids: { type: "array", items: { type: "string" }, minItems: 2 } }, required: ["ids"] },
       },
       {
         name: "stop_child",
@@ -618,6 +646,25 @@ export class Orchestrator implements McpHost {
       }
       case "wait_children":
         return this.waitChildren(node, args);
+      case "link_children": {
+        const ids = (Array.isArray(args.ids) ? args.ids : []).map(String);
+        if (ids.length < 2) throw new Error("pass at least two sub-agent ids");
+        for (const id of ids) this.ownChild(node, id);
+        for (const a of ids) for (const b of ids) if (a < b) this.links.add(`${a}|${b}`);
+        this.bus.emit("node.linked", node.id, { ids });
+        return `linked: ${ids.join(", ")}`;
+      }
+      case "send_message": {
+        const to = this.registry.get(String(args.to ?? ""));
+        const key = [node.id, to?.id ?? ""].sort().join("|");
+        if (!to || !this.links.has(key)) throw new Error(`you are not linked with ${args.to}; ask your parent to link you`);
+        const text = String(args.text ?? "").slice(0, 2000);
+        to.messages.push({ from: node.id, text });
+        this.bus.emit("node.message", node.id, { to: to.id, text: text.slice(0, 200) });
+        return `sent to ${to.id}`;
+      }
+      case "read_messages":
+        return JSON.stringify(node.messages.splice(0));
       case "get_child_diff": {
         const child = this.ownChild(node, args.id);
         if (!child.branch) throw new Error("worktrees are not enabled for this run");

@@ -73,7 +73,8 @@ test("a child at the deepest level gets no spawn tools", async () => {
     const spawned = await h.orch.call(rootToken(h), "spawn_child", { cli: "fake", task: "FAKE: say hi" });
     const child = h.orch.registry.get(JSON.parse(spawned.text).id)!;
     const names = h.orch.toolsFor(child.token)!.map((t) => t.name);
-    assert.deepEqual(names, ["report"]);
+    assert.ok(names.includes("report"));
+    assert.ok(!names.includes("spawn_child"));
     const denied = await h.orch.call(child.token, "spawn_child", { cli: "fake", task: "x" });
     assert.equal(denied.isError, true);
   } finally {
@@ -246,6 +247,31 @@ test("restoring from recorded events rebuilds the tree and marks interrupted nod
     const next = await second.call(second.registry.get("root")!.token, "spawn_child", { cli: "fake", task: "FAKE: say again" });
     assert.equal(JSON.parse(next.text).id, "c3");
     await second.shutdown();
+  } finally {
+    await h.close();
+  }
+});
+
+test("siblings can exchange messages only after their parent links them", async () => {
+  const h = await startHarness();
+  try {
+    const token = rootToken(h);
+    const a = JSON.parse((await h.orch.call(token, "spawn_child", { cli: "fake", task: "FAKE: sleep 20000" })).text);
+    const b = JSON.parse((await h.orch.call(token, "spawn_child", { cli: "fake", task: "FAKE: sleep 20000" })).text);
+    const nodeA = h.orch.registry.get(a.id)!;
+    const nodeB = h.orch.registry.get(b.id)!;
+    const blocked = await h.orch.call(nodeA.token, "send_message", { to: b.id, text: "hi" });
+    assert.equal(blocked.isError, true);
+    assert.match(blocked.text, /not linked/);
+    assert.equal((await h.orch.call(token, "link_children", { ids: [a.id] })).isError, true);
+    assert.equal((await h.orch.call(token, "link_children", { ids: [a.id, b.id] })).isError, false);
+    assert.equal((await h.orch.call(nodeA.token, "send_message", { to: b.id, text: "hello b" })).isError, false);
+    const read = JSON.parse((await h.orch.call(nodeB.token, "read_messages", {})).text);
+    assert.deepEqual(read, [{ from: a.id, text: "hello b" }]);
+    assert.deepEqual(JSON.parse((await h.orch.call(nodeB.token, "read_messages", {})).text), []);
+    assert.equal((await h.orch.call(nodeA.token, "link_children", { ids: [a.id, b.id] })).isError, true);
+    h.orch.stopNode(a.id);
+    h.orch.stopNode(b.id);
   } finally {
     await h.close();
   }

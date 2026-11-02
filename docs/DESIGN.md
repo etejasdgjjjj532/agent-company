@@ -97,7 +97,6 @@ can_spawn = false
 
 ## 未実装
 
-- 兄弟間の通信
 - 再開時に、途中だったノードを自動でやり直す機能
 - Gemini CLI の実機確認、Windows / macOS の実機確認
 - 署名付きインストーラ

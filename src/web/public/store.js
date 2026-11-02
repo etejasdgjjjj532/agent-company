@@ -101,6 +101,9 @@ export class Store {
       case "session.resumed":
         this.push({ ts, kind: "activity", tone: "ok", text: d.interrupted?.length ? `セッションを再開しました (中断されたノード: ${d.interrupted.join(", ")})` : "セッションを再開しました" });
         break;
+      case "node.linked":
+        this.push({ ts, kind: "activity", text: `${d.ids.join(" と ")} の直接連絡を許可` });
+        break;
       case "node.merged":
         this.push({ ts, kind: "activity", tone: "ok", text: `${event.nodeId} を統合しました` });
         break;

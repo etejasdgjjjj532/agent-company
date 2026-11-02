@@ -3,6 +3,11 @@ name: Release desktop app
 on:
   push:
     tags: ["v*"]
+  pull_request:
+    paths:
+      - "apps/desktop/**"
+      - ".github/workflows/release.yml"
+      - "scripts/build.mjs"
   workflow_dispatch:
 
 permissions:

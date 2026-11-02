@@ -23,6 +23,7 @@ export interface AgentNode {
   endedAt?: number;
   inbox: string[];
   queued: string[];
+  messages: Array<{ from: string; text: string }>;
 }
 
 export interface NodeView {
