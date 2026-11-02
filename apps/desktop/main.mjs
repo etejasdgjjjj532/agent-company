@@ -147,10 +147,13 @@ async function selfTest(shotPath) {
     "JSON.stringify({ bridge: Object.keys(window.desktop || {}), title: document.title, hasSidebar: !!document.getElementById('sidebar'), text: document.body.innerText.slice(0, 120) })",
   );
   console.log(`SELFTEST ${info}`);
+  const parsed = JSON.parse(info);
+  const healthy = parsed.hasSidebar && parsed.bridge.includes("pickFolder");
   const image = await win.webContents.capturePage();
   writeFileSync(shotPath, image.toPNG());
   console.log(`SELFTEST screenshot ${shotPath} ${image.getSize().width}x${image.getSize().height}`);
-  app.exit(0);
+  console.log(healthy ? "SELFTEST OK" : "SELFTEST FAILED");
+  app.exit(healthy ? 0 : 1);
 }
 
 async function start() {
