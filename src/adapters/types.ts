@@ -1,6 +1,6 @@
 export type AdapterEvent =
   | { kind: "session"; sessionId: string }
-  | { kind: "text"; text: string }
+  | { kind: "text"; text: string; append?: boolean }
   | { kind: "tool"; name: string; summary: string }
   | { kind: "usage"; inputTokens: number; outputTokens: number; costUsd?: number }
   | { kind: "final"; text: string; isError: boolean };

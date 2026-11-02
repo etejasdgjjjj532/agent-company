@@ -93,7 +93,7 @@ agent-company replay <events.jsonl>   記録の表示
 |---|---|
 | Claude Code / Codex / OpenCode | Linux の実機で、Root と子の組み合わせを確認済み |
 | GPT 互換 API (opencode 経由) | 疑似サーバーで接続・認証・モデル指定を確認済み |
-| Gemini CLI | 実装済みですが、未認証のため実機では未確認 |
+| Gemini CLI | 実装済みですが、未認証のため実機では未確認です。公式ドキュメントには、2026 年 6 月に Antigravity CLI へ置き換えられたという注記があり、今後は対応の見直しが必要になるかもしれません |
 | Windows / macOS | CI でテストを実行しています。実機の確認はこれからです |
 
 ## 既知の制限

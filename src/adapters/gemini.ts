@@ -26,7 +26,7 @@ export function geminiAdapter(bin = process.env.AGENT_COMPANY_GEMINI_BIN ?? "gem
       const sessionId = event.session_id ?? event.sessionId;
       if (event.type === "init" && sessionId) out.push({ kind: "session", sessionId: String(sessionId) });
       if (event.type === "message" && event.role !== "user" && event.content) {
-        out.push({ kind: "text", text: String(event.content) });
+        out.push({ kind: "text", text: String(event.content), append: event.delta === true });
       } else if (event.type === "tool_use") {
         out.push({ kind: "tool", name: String(event.tool_name ?? event.name ?? "tool"), summary: clip(JSON.stringify(event.parameters ?? {})) });
       } else if (event.type === "result") {

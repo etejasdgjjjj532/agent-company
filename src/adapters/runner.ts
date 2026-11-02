@@ -59,7 +59,7 @@ export function runAgent(
 
   const handle = (event: AdapterEvent) => {
     if (event.kind === "session") sessionId = event.sessionId;
-    else if (event.kind === "text") lastText = event.text;
+    else if (event.kind === "text") lastText = event.append ? lastText + event.text : event.text;
     else if (event.kind === "usage") {
       inputTokens += event.inputTokens;
       outputTokens += event.outputTokens;
