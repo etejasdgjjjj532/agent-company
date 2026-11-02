@@ -1,3 +1,4 @@
+import { rmrf } from "./helpers.ts";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { existsSync, mkdtempSync, readFileSync, rmSync, statSync } from "node:fs";
@@ -81,6 +82,6 @@ test("the api adapter writes a temporary 0600 config and removes it on cleanup",
     invocation.cleanup!();
     assert.equal(existsSync(file), false);
   } finally {
-    rmSync(dir, { recursive: true, force: true });
+    rmrf(dir);
   }
 });

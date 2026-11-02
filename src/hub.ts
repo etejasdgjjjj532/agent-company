@@ -4,7 +4,7 @@ import { basename, join } from "node:path";
 import { opencodeAdapter } from "./adapters/opencode.ts";
 import type { Adapter } from "./adapters/types.ts";
 import { createSession, type Session } from "./app.ts";
-import type { Charter } from "./core/charter.ts";
+import { parseCharter, serializeCharter, type Charter } from "./core/charter.ts";
 import type { OrchEvent } from "./core/events.ts";
 import { dataHome } from "./core/platform.ts";
 import { normalizeProvider, parseEngine, toPublic, type ApiProvider, type PublicProvider } from "./core/providers.ts";
@@ -109,12 +109,11 @@ export class Hub extends EventEmitter {
   }
 
   async start(input: { repoDir: string; charter: Charter; name?: string }): Promise<SessionMeta> {
-    if (this.active) throw new Error("a session is already running; stop it first");
     const stamp = new Date().toISOString().replace(/[-:]/g, "").replace(/\..*/, "").replace("T", "-");
     const id = `${stamp}-${process.pid}`;
     const runDir = join(this.home, "runs", id);
     mkdirSync(runDir, { recursive: true });
-    const session = await createSession({ charter: input.charter, adapters: this.adapters, repoDir: input.repoDir, runDir });
+    writeFileSync(join(runDir, "charter.toml"), serializeCharter(input.charter));
     const meta: SessionMeta = {
       id,
       name: input.name ?? (basename(input.repoDir) || input.repoDir),
@@ -123,11 +122,30 @@ export class Hub extends EventEmitter {
       startedAt: Date.now(),
       active: true,
     };
+    return this.launch(meta, runDir, input.charter);
+  }
+
+  async resume(id: string): Promise<SessionMeta> {
+    if (!/^[\w-]+$/.test(id)) throw new Error("bad session id");
+    const runDir = join(this.home, "runs", id);
+    const metaFile = join(runDir, "session.json");
+    const charterFile = join(runDir, "charter.toml");
+    if (!existsSync(metaFile) || !existsSync(charterFile)) throw new Error("このセッションは再開できません (設計書の記録がありません)");
+    const saved = JSON.parse(readFileSync(metaFile, "utf8")) as SessionMeta;
+    if (!existsSync(saved.repoDir)) throw new Error(`作業フォルダが見つかりません: ${saved.repoDir}`);
+    const charter = parseCharter(readFileSync(charterFile, "utf8"));
+    const meta: SessionMeta = { ...saved, active: true, endedAt: undefined };
+    return this.launch(meta, runDir, charter, this.readEvents(id));
+  }
+
+  private async launch(meta: SessionMeta, runDir: string, charter: Charter, restore?: OrchEvent[]): Promise<SessionMeta> {
+    if (this.active) throw new Error("a session is already running; stop it first");
+    const session = await createSession({ charter, adapters: this.adapters, repoDir: meta.repoDir, runDir, restore });
     this.active = session;
     this.activeMeta = meta;
     this.writeMeta(meta, runDir);
-    const settings = this.settings();
-    this.saveSettings({ recentProjects: [input.repoDir, ...settings.recentProjects] });
+    this.saveSettings({ recentProjects: [meta.repoDir, ...this.settings().recentProjects] });
+    if (restore) session.orch.bus.emit("session.resumed", "root", { interrupted: session.orch.restoredInterrupted });
     this.emit("session", meta);
     return meta;
   }

@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { runAgent, type AgentRun, type RunResult } from "./adapters/runner.ts";
 import type { Adapter, AdapterEvent, Profile } from "./adapters/types.ts";
 import type { Charter } from "./core/charter.ts";
-import type { EventBus, NodeStatus } from "./core/events.ts";
+import type { EventBus, NodeStatus, OrchEvent } from "./core/events.ts";
 import { checkSpawn } from "./core/limits.ts";
 import { Registry, type AgentNode, type NodeView } from "./core/registry.ts";
 import { commitAll, createWorktree, diffAgainst, git, isGitRepo, mergeBranch } from "./core/worktree.ts";
@@ -23,6 +23,7 @@ export interface OrchestratorOptions {
   bus: EventBus;
   mcpBaseUrl: () => string;
   approvalWaitMs?: number;
+  restore?: OrchEvent[];
 }
 
 class Semaphore {
@@ -70,6 +71,7 @@ export class Orchestrator implements McpHost {
   private approvals = new Map<string, { nodeId: string; description: string; resolve: (ok: boolean) => void }>();
   private counters = new Map<string, number>();
   private runTag = randomBytes(3).toString("hex");
+  private closed = false;
   private approvalWaitMs: number;
   private mergeApprovals = new Map<string, { state: "pending" | "approved" | "declined"; promise: Promise<boolean> }>();
 
@@ -99,8 +101,10 @@ export class Orchestrator implements McpHost {
       outputTokens: 0,
       costUsd: null,
       inbox: [],
+      queued: [],
     });
-    this.bus.emit("node.created", ROOT_ID, { node: this.view(ROOT_ID) });
+    if (options.restore) this.restoreFrom(options.restore);
+    else this.bus.emit("node.created", ROOT_ID, { node: this.view(ROOT_ID) });
   }
 
   view(id: string): NodeView {
@@ -126,7 +130,12 @@ export class Orchestrator implements McpHost {
   }
 
   private onAdapterEvent(node: AgentNode, event: AdapterEvent): void {
-    if (event.kind === "session") node.sessionId = event.sessionId;
+    if (event.kind === "session") {
+      if (node.sessionId !== event.sessionId) {
+        node.sessionId = event.sessionId;
+        this.bus.emit("node.session", node.id, { sessionId: event.sessionId });
+      }
+    }
     else if (event.kind === "text") this.bus.emit("node.output", node.id, { kind: "text", text: event.text });
     else if (event.kind === "tool") this.bus.emit("node.output", node.id, { kind: "tool", name: event.name, text: event.summary });
     else if (event.kind === "usage") {
@@ -269,6 +278,7 @@ export class Orchestrator implements McpHost {
       outputTokens: 0,
       costUsd: null,
       inbox: [],
+      queued: [],
     };
     this.registry.add(node);
     this.bus.emit("node.created", id, { node: this.registry.view(node), task });
@@ -280,11 +290,12 @@ export class Orchestrator implements McpHost {
   private async runNode(node: AgentNode, parent: AgentNode): Promise<void> {
     await this.acquire(node);
     try {
-      if (node.status === "stopped") return;
+      if (node.status === "stopped" || this.closed) return;
       if (this.useWorktrees) {
         node.cwd = join(this.dataDir, "worktrees", node.id);
         node.branch = `agent/${this.runTag}/${node.id}`;
         createWorktree(this.repoDir, node.cwd, node.branch, parent.branch ?? "HEAD");
+        this.bus.emit("node.branch", node.id, { branch: node.branch, cwd: node.cwd });
       }
       node.startedAt = Date.now();
       const adapter = this.adapters[node.cli];
@@ -298,6 +309,7 @@ export class Orchestrator implements McpHost {
         this.bus.emit("node.retry", node.id, { attempt: node.attempts, error: result.text || result.stderrTail });
       }
       await this.finishNode(node, result);
+      await this.drainQueue(node);
     } catch (error: any) {
       node.error = String(error?.message ?? error);
       node.endedAt = Date.now();
@@ -344,7 +356,10 @@ export class Orchestrator implements McpHost {
   }
 
   async shutdown(): Promise<void> {
-    for (const run of this.runs.values()) run.stop();
+    this.closed = true;
+    const pending = [...this.runs.values()];
+    for (const run of pending) run.stop();
+    await Promise.allSettled(pending.map((run) => run.promise));
     for (const approval of this.approvals.values()) approval.resolve(false);
     this.approvals.clear();
   }
@@ -353,10 +368,16 @@ export class Orchestrator implements McpHost {
     if (id === ROOT_ID) return this.chat(text);
     const node = this.registry.get(id);
     if (!node) throw new Error(`unknown node ${id}`);
-    if (!TERMINAL.includes(node.status)) throw new Error(`node ${id} is still ${node.status}; send the instruction after it finishes`);
     const adapter = this.adapters[node.cli];
-    if (!adapter.supportsResume || !node.sessionId) throw new Error(`${node.cli} cannot continue a finished session`);
+    if (!adapter.supportsResume) throw new Error(`${node.cli} cannot take a follow-up instruction`);
     const parent = this.registry.get(node.parentId ?? ROOT_ID) as AgentNode;
+    if (!TERMINAL.includes(node.status)) {
+      node.queued.push(text);
+      this.bus.emit("node.user_intervention", id, { text, queued: true });
+      parent.inbox.push(`The user sent a direct instruction to ${id} while it was running; it will be applied when it finishes: ${text}`);
+      return "queued: the instruction runs when the node finishes its current work";
+    }
+    if (!node.sessionId) throw new Error(`${node.cli} cannot continue a finished session`);
     this.bus.emit("node.user_intervention", id, { text });
     parent.inbox.push(`The user sent a direct instruction to ${id}: ${text}`);
     node.attempts++;
@@ -371,6 +392,94 @@ export class Orchestrator implements McpHost {
       this.release(node);
     }
   }
+
+  private async drainQueue(node: AgentNode): Promise<void> {
+    const adapter = this.adapters[node.cli];
+    while (node.queued.length > 0 && node.status !== "stopped") {
+      const text = node.queued.shift() as string;
+      if (!adapter.supportsResume || !node.sessionId) {
+        this.bus.emit("node.warning", node.id, { message: `queued instruction dropped: ${node.cli} cannot continue a session` });
+        node.queued.length = 0;
+        break;
+      }
+      node.attempts++;
+      this.setStatus(node, "running");
+      const result = await this.execute(node, adapter, "worker", text, node.sessionId);
+      this.reported.delete(node.id);
+      await this.finishNode(node, result);
+    }
+  }
+
+  private restoreFrom(events: OrchEvent[]): void {
+    for (const event of events) {
+      const d = (event.data ?? {}) as Record<string, any>;
+      const node = event.nodeId ? this.registry.get(event.nodeId) : undefined;
+      switch (event.type) {
+        case "node.created": {
+          if (event.nodeId === ROOT_ID || !d.node) break;
+          const view = d.node as NodeView;
+          this.registry.add({
+            id: view.id,
+            parentId: view.parentId,
+            depth: view.depth,
+            cli: view.cli,
+            role: view.role,
+            task: String(d.task ?? view.task ?? ""),
+            status: "pending",
+            token: randomBytes(16).toString("hex"),
+            cwd: this.repoDir,
+            attempts: 0,
+            inputTokens: 0,
+            outputTokens: 0,
+            costUsd: null,
+            inbox: [],
+            queued: [],
+          });
+          const index = Number(view.id.slice(view.id.lastIndexOf(".") + 1).replace(/^c/, ""));
+          const parentId = view.parentId ?? ROOT_ID;
+          if (Number.isFinite(index)) this.counters.set(parentId, Math.max(this.counters.get(parentId) ?? 0, index));
+          break;
+        }
+        case "node.status":
+          if (node) {
+            node.status = d.status;
+            node.error = d.error;
+            if (d.attempt) node.attempts = d.attempt;
+          }
+          break;
+        case "node.usage":
+          if (node) Object.assign(node, { inputTokens: d.inputTokens ?? 0, outputTokens: d.outputTokens ?? 0, costUsd: d.costUsd ?? null });
+          break;
+        case "node.session":
+          if (node) node.sessionId = d.sessionId;
+          break;
+        case "node.branch":
+          if (node) Object.assign(node, { branch: d.branch, cwd: d.cwd });
+          break;
+        case "node.result":
+          if (node) node.result = d.result;
+          break;
+        default:
+          break;
+      }
+    }
+    const interrupted: string[] = [];
+    for (const node of this.registry.all()) {
+      if (node.id === ROOT_ID) node.status = "waiting";
+      else if (node.status === "running" || node.status === "pending") {
+        node.status = "stopped";
+        node.error = "interrupted by a restart";
+        interrupted.push(node.id);
+      }
+    }
+    const root = this.registry.get(ROOT_ID) as AgentNode;
+    if (interrupted.length > 0) {
+      root.inbox.push(`The app was restarted. These sub-agents were interrupted and did not finish: ${interrupted.join(", ")}. Re-create them if the work is still needed.`);
+    }
+    this.restoredInterrupted = interrupted;
+  }
+
+  restoredInterrupted: string[] = [];
 
   requestApproval(nodeId: string, description: string): Promise<boolean> {
     const id = randomBytes(4).toString("hex");

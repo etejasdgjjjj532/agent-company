@@ -9,6 +9,10 @@ import { EventBus } from "../src/core/events.ts";
 import { createMcpServer } from "../src/mcp/http.ts";
 import { Orchestrator } from "../src/orchestrator.ts";
 
+export function rmrf(path: string): void {
+  rmSync(path, { recursive: true, force: true, maxRetries: 20, retryDelay: 250 });
+}
+
 export interface Harness {
   orch: Orchestrator;
   bus: EventBus;
@@ -68,7 +72,7 @@ export async function startHarness(input: Partial<CharterInput> = {}, withRepo =
       } catch {
         // repo may not exist
       }
-      rmSync(baseDir, { recursive: true, force: true });
+      rmrf(baseDir);
     },
   };
 }

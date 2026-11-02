@@ -39,6 +39,14 @@ export function renderSession(root, ctx) {
     el("span", { class: "muted small" }, meta?.repoDir ?? ""),
     el("span", { class: "grow" }), busyChip, stats,
     el("button", { class: "small", onclick: () => ctx.toggleSide() }, "グラフ / 詳細"),
+    readOnly && meta?.id ? el("button", { class: "small", onclick: async () => {
+      try {
+        await api(`/api/sessions/${meta.id}/resume`, {});
+        await ctx.refresh();
+      } catch (error) {
+        ctx.toast(error.message, true);
+      }
+    } }, "再開") : null,
     !readOnly ? el("button", { class: "small danger", onclick: async () => {
       if (!confirm("このセッションを終了しますか? 動いているエージェントはすべて止まります。")) return;
       await api("/api/session/stop", {});

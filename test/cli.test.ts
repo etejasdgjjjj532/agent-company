@@ -9,7 +9,7 @@ import { describeCharter, heuristicTasks, parseAdvice, runWizard, type WizardIO 
 import { Hub } from "../src/hub.ts";
 import { fakeAdapter } from "../src/adapters/fake.ts";
 import { buildCharter } from "../src/core/charter.ts";
-import { makeRepo } from "./helpers.ts";
+import { makeRepo, rmrf } from "./helpers.ts";
 import { readJsonl } from "../src/core/store.ts";
 import { versionAtLeast } from "../src/doctor.ts";
 
@@ -115,8 +115,15 @@ test("hub: a started session records masked events and is listed after it stops"
     assert.equal(hub.sessions()[0].active, false);
     assert.ok(hub.readEvents(meta.id).length > 0);
     assert.throws(() => hub.readEvents("../etc"));
+    const resumed = await hub.resume(meta.id);
+    assert.equal(resumed.active, true);
+    assert.ok(hub.active!.orch.bus.history.some((e) => e.type === "chat.reply"));
+    assert.ok(hub.active!.orch.bus.history.some((e) => e.type === "session.resumed"));
+    const again = await hub.active!.orch.chat("FAKE: say after-resume");
+    assert.match(again, /after-resume/);
+    await assert.rejects(hub.resume(meta.id), /already running/);
   } finally {
     await hub.stop();
-    rmSync(base, { recursive: true, force: true });
+    rmrf(base);
   }
 });

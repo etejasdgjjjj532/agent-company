@@ -18,8 +18,10 @@ export class EventBus {
   private seq = 0;
   private sink?: Listener;
 
-  constructor(sink?: Listener) {
+  constructor(sink?: Listener, initial: OrchEvent[] = []) {
     this.sink = sink;
+    this.history.push(...initial.slice(-HISTORY_LIMIT));
+    this.seq = initial.reduce((max, event) => Math.max(max, event.seq), 0);
   }
 
   emit(type: string, nodeId?: string, data?: Record<string, unknown>): OrchEvent {

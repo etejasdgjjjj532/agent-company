@@ -8,7 +8,7 @@ import { join } from "node:path";
 import { fakeAdapter } from "../src/adapters/fake.ts";
 import { Hub } from "../src/hub.ts";
 import { startWebServer } from "../src/web/server.ts";
-import { makeRepo } from "./helpers.ts";
+import { makeRepo, rmrf } from "./helpers.ts";
 
 process.env.AGENT_COMPANY_FAKE = "1";
 
@@ -46,7 +46,7 @@ async function withWeb(run: (ctx: Ctx) => Promise<void>) {
   } finally {
     await hub.stop();
     await web.close();
-    rmSync(dir, { recursive: true, force: true });
+    rmrf(dir);
   }
 }
 
@@ -86,7 +86,7 @@ test("web: refuses non-loopback hosts unless LAN is explicitly allowed", async (
     assert.equal((await fetch(web.url.split("/?")[0] + "/api/state")).status, 401);
     await web.close();
   } finally {
-    rmSync(dir, { recursive: true, force: true });
+    rmrf(dir);
   }
 });
 

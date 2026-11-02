@@ -22,6 +22,7 @@ export interface AgentNode {
   startedAt?: number;
   endedAt?: number;
   inbox: string[];
+  queued: string[];
 }
 
 export interface NodeView {

@@ -111,7 +111,7 @@ function renderNodeDetail(body, store) {
   const readOnly = ctx.route.name === "session" && ctx.route.id !== ctx.state.active?.id;
   if (!readOnly && (n.status === "running" || n.status === "pending")) parts.push(el("button", { class: "small", onclick: () => api(`/api/node/${encodeURIComponent(n.id)}/stop`, {}).catch((e) => toast(e.message, true)) }, "このノードを停止"));
   if (!readOnly && n.id !== "root") {
-    const input = el("input", { type: "text", placeholder: "このノードへ直接指示 (完了後に送れます)" });
+    const input = el("input", { type: "text", placeholder: "このノードへ直接指示 (実行中なら完了後に実行)" });
     parts.push(el("form", { class: "row", style: "margin-top:10px", onsubmit: async (e) => {
       e.preventDefault();
       const text = input.value.trim();

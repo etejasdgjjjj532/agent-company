@@ -1,7 +1,7 @@
 import type { AddressInfo } from "node:net";
 import { join } from "node:path";
 import { createJsonlSink } from "./core/store.ts";
-import { EventBus } from "./core/events.ts";
+import { EventBus, type OrchEvent } from "./core/events.ts";
 import type { Charter } from "./core/charter.ts";
 import type { Adapter } from "./adapters/types.ts";
 import { createMcpServer } from "./mcp/http.ts";
@@ -12,6 +12,7 @@ export interface SessionOptions {
   adapters: Record<string, Adapter>;
   repoDir: string;
   runDir: string;
+  restore?: OrchEvent[];
 }
 
 export interface Session {
@@ -29,7 +30,7 @@ async function listen(server: ReturnType<typeof createMcpServer>): Promise<numbe
 }
 
 export async function createSession(options: SessionOptions): Promise<Session> {
-  const bus = new EventBus(createJsonlSink(join(options.runDir, "events.jsonl")));
+  const bus = new EventBus(createJsonlSink(join(options.runDir, "events.jsonl")), options.restore);
   const holder: { orch?: Orchestrator } = {};
   const mcp = createMcpServer({
     toolsFor: (token) => holder.orch!.toolsFor(token),
@@ -43,6 +44,7 @@ export async function createSession(options: SessionOptions): Promise<Session> {
     dataDir: options.runDir,
     bus,
     mcpBaseUrl: () => `http://127.0.0.1:${mcpPort}`,
+    restore: options.restore,
   });
   holder.orch = orch;
   return {

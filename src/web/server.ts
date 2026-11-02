@@ -295,6 +295,11 @@ export async function startWebServer(options: WebOptions): Promise<WebHandle> {
           if (goal) void hub.active!.orch.chat(goal).catch((error) => hub.active?.orch.bus.emit("chat.error", "root", { message: String(error?.message ?? error) }));
           return json(res, 200, { meta });
         }
+        const resume = /^\/api\/sessions\/([\w-]+)\/resume$/.exec(url.pathname);
+        if (resume) {
+          if (hub.active) return json(res, 409, { error: "実行中のセッションを先に終了してください" });
+          return json(res, 200, { meta: await hub.resume(resume[1]) });
+        }
         if (url.pathname === "/api/session/stop") {
           await hub.stop();
           return json(res, 200, { ok: true });

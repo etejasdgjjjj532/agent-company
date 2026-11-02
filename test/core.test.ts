@@ -1,3 +1,4 @@
+import { rmrf } from "./helpers.ts";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
@@ -91,6 +92,6 @@ test("events: bus numbers events and sink writes masked JSONL", () => {
     assert.deepEqual(events.map((e) => e.seq), [1, 2]);
     assert.ok(!JSON.stringify(events).includes("supersecretvalue"));
   } finally {
-    rmSync(dir, { recursive: true, force: true });
+    rmrf(dir);
   }
 });

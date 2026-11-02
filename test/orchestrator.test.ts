@@ -195,3 +195,58 @@ test("merge_child returns a pending message while approval is open, then merges 
     await h.close();
   }
 });
+
+test("an instruction sent to a running child is queued and applied when it finishes", async () => {
+  const h = await startHarness();
+  try {
+    const token = rootToken(h);
+    const spawned = JSON.parse((await h.orch.call(token, "spawn_child", { cli: "fake", task: "FAKE: sleep 700\nFAKE: say first" })).text);
+    await new Promise((resolve) => setTimeout(resolve, 250));
+    const queued = await h.orch.messageNode(spawned.id, "FAKE: say second");
+    assert.match(queued, /queued/);
+    const waited = JSON.parse((await h.orch.call(token, "wait_children", {})).text);
+    assert.match(waited.notes[0], /while it was running/);
+    const deadline = Date.now() + 10000;
+    while (h.orch.registry.get(spawned.id)!.result !== "second" && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 50));
+    assert.equal(h.orch.registry.get(spawned.id)!.result, "second");
+    assert.equal(h.orch.registry.get(spawned.id)!.status, "done");
+  } finally {
+    await h.close();
+  }
+});
+
+test("restoring from recorded events rebuilds the tree and marks interrupted nodes", async () => {
+  const h = await startHarness();
+  try {
+    const reply = await h.orch.chat(["FAKE: spawn fake FAKE: say kept", "FAKE: wait", "FAKE: say root-done"].join("\n"));
+    assert.match(reply, /root-done/);
+    const token = rootToken(h);
+    await h.orch.call(token, "spawn_child", { cli: "fake", task: "FAKE: sleep 30000" });
+    await new Promise((resolve) => setTimeout(resolve, 400));
+    const events = [...h.bus.history];
+    const { EventBus } = await import("../src/core/events.ts");
+    const { Orchestrator } = await import("../src/orchestrator.ts");
+    const { fakeAdapter } = await import("../src/adapters/fake.ts");
+    const second = new Orchestrator({
+      charter: h.orch.charter,
+      adapters: { fake: fakeAdapter("fake") },
+      repoDir: h.repoDir,
+      dataDir: h.dataDir,
+      bus: new EventBus(undefined, events),
+      mcpBaseUrl: () => "http://127.0.0.1:1",
+      restore: events,
+    });
+    const byId = Object.fromEntries(second.tree().map((n) => [n.id, n]));
+    assert.equal(byId.c1.status, "done");
+    assert.equal(byId.c2.status, "stopped");
+    assert.equal(second.registry.get("c1")!.result, "kept");
+    assert.ok(second.registry.get("c1")!.branch);
+    assert.ok(second.registry.get("root")!.sessionId);
+    assert.match(second.registry.get("root")!.inbox[0], /c2/);
+    const next = await second.call(second.registry.get("root")!.token, "spawn_child", { cli: "fake", task: "FAKE: say again" });
+    assert.equal(JSON.parse(next.text).id, "c3");
+    await second.shutdown();
+  } finally {
+    await h.close();
+  }
+});

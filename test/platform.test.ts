@@ -1,3 +1,4 @@
+import { rmrf } from "./helpers.ts";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
@@ -40,7 +41,7 @@ test("resolveSpawn wraps .cmd shims through cmd.exe on windows", () => {
     assert.match(direct.file, /claude\.exe$/);
     assert.deepEqual(direct.args, ["-p"]);
   } finally {
-    rmSync(dir, { recursive: true, force: true });
+    rmrf(dir);
   }
 });
 
