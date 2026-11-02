@@ -9,6 +9,7 @@ export class Store {
     this.timeline = [];
     this.lastSeq = 0;
     this.rootBusy = false;
+    this.mode = null;
     this.listeners = new Set();
     this.scheduled = false;
   }
@@ -97,6 +98,10 @@ export class Store {
         break;
       case "node.warning":
         this.log(node, "tool", d.message);
+        break;
+      case "session.mode":
+        this.mode = d.mode;
+        this.push({ ts, kind: "activity", tone: "ok", text: d.mode === "normal" ? "通常モードに切り替えました" : "マルチエージェントモードに切り替えました" });
         break;
       case "session.resumed":
         this.push({ ts, kind: "activity", tone: "ok", text: d.interrupted?.length ? `セッションを再開しました (中断されたノード: ${d.interrupted.join(", ")})` : "セッションを再開しました" });

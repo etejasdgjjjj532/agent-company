@@ -13,6 +13,7 @@ export interface SessionOptions {
   repoDir: string;
   runDir: string;
   restore?: OrchEvent[];
+  engineSettings?: (cli: string) => import("./core/engines.ts").EngineSettings;
 }
 
 export interface Session {
@@ -45,6 +46,7 @@ export async function createSession(options: SessionOptions): Promise<Session> {
     bus,
     mcpBaseUrl: () => `http://127.0.0.1:${mcpPort}`,
     restore: options.restore,
+    engineSettings: options.engineSettings,
   });
   holder.orch = orch;
   return {

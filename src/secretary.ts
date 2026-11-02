@@ -32,6 +32,7 @@ export function heuristicTasks(goal: string): number {
 }
 
 export function describeCharter(charter: Charter): string {
+  if (charter.mode === "normal") return `通常モード: ${charter.rootCli} が作業フォルダで直接作業します (サブエージェントなし)`;
   const { limits } = charter;
   const lines: string[] = [];
   const names = ["Root", "子", "孫", "ひ孫", "玄孫", "来孫"];

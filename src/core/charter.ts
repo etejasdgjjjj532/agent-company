@@ -5,8 +5,11 @@ export const KNOWN_CLIS = ["claude", "codex", "gemini", "opencode"] as const;
 
 const isEngine = (name: string): boolean => (KNOWN_CLIS as readonly string[]).includes(name) || /^api:[a-z0-9][a-z0-9-]{0,40}(:.+)?$/.test(name);
 
+export type SessionMode = "multi" | "normal";
+
 export interface Charter {
   name: string;
+  mode: SessionMode;
   rootCli: string;
   secretaryCli: string;
   maxConcurrent: number;
@@ -33,6 +36,7 @@ export const PRESETS: Record<PresetName, PresetSpec> = {
 
 export interface CharterInput {
   name?: string;
+  mode?: SessionMode;
   rootCli: string;
   secretaryCli?: string;
   preset?: PresetName;
@@ -46,7 +50,22 @@ export interface CharterInput {
   childClis?: string[];
 }
 
+export function buildNormalCharter(input: { name?: string; rootCli: string; maxNodeMinutes?: number }): Charter {
+  return {
+    name: input.name ?? "agent-company",
+    mode: "normal",
+    rootCli: input.rootCli,
+    secretaryCli: input.rootCli,
+    maxConcurrent: 1,
+    maxRetries: 0,
+    maxNodeMinutes: input.maxNodeMinutes ?? 60,
+    maxTotalTokens: 0,
+    limits: { maxDepth: 0, maxTotalNodes: 1, levels: { 0: { maxChildren: 0, allowedCli: [input.rootCli], canSpawn: false } } },
+  };
+}
+
 export function buildCharter(input: CharterInput): Charter {
+  if (input.mode === "normal") return buildNormalCharter({ name: input.name, rootCli: input.rootCli });
   const base = PRESETS[input.preset ?? "standard"];
   const maxDepth = input.maxDepth ?? base.maxDepth;
   const childClis = input.childClis ?? [input.rootCli];
@@ -60,6 +79,7 @@ export function buildCharter(input: CharterInput): Charter {
   }
   return {
     name: input.name ?? "agent-company",
+    mode: "multi",
     rootCli: input.rootCli,
     secretaryCli: input.secretaryCli ?? input.rootCli,
     maxConcurrent: input.maxConcurrent ?? base.maxConcurrent,
@@ -84,6 +104,11 @@ function table(value: TomlValue | undefined, name: string): TomlTable {
 
 export function validateCharter(charter: Charter): void {
   const { limits } = charter;
+  if (charter.mode === "normal") {
+    if (!limits.levels[0]) throw new Error("charter: [level.0] is missing");
+    if (!isEngine(charter.rootCli)) throw new Error(`charter: unknown root cli "${charter.rootCli}"`);
+    return;
+  }
   if (!Number.isInteger(limits.maxDepth) || limits.maxDepth < 1) throw new Error("charter: max_depth must be >= 1");
   if (limits.maxTotalNodes < 2) throw new Error("charter: max_total_nodes must be >= 2");
   if (charter.maxConcurrent < 1) throw new Error("charter: max_concurrent must be >= 1");
@@ -119,6 +144,7 @@ export function parseCharter(source: string): Charter {
   const secretary = root.secretary && typeof root.secretary === "object" ? (root.secretary as TomlTable) : undefined;
   const charter: Charter = {
     name: typeof root.name === "string" ? root.name : "agent-company",
+    mode: root.mode === "normal" ? "normal" : "multi",
     rootCli,
     secretaryCli: String(secretary?.cli ?? rootCli),
     maxConcurrent: num(limitsTable, "max_concurrent"),
@@ -138,6 +164,7 @@ export function serializeCharter(charter: Charter): string {
   }
   return stringifyToml({
     name: charter.name,
+    mode: charter.mode,
     limits: {
       max_depth: charter.limits.maxDepth,
       max_total_nodes: charter.limits.maxTotalNodes,

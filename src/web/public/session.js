@@ -1,4 +1,4 @@
-import { api, el, fmtNumber, term } from "./util.js";
+import { api, copyText, el, fmtNumber, renderMarkdown, term } from "./util.js";
 
 export function renderSession(root, ctx) {
   const { store, readOnly, meta } = ctx;
@@ -9,12 +9,30 @@ export function renderSession(root, ctx) {
   const send = el("button", { class: "primary", type: "submit", disabled: readOnly }, "送信");
   const stop = el("button", { type: "button", class: "danger", onclick: () => api("/api/node/root/stop", {}).catch((e) => ctx.toast(e.message, true)) }, "停止");
 
+  const slash = async (text) => {
+    const [cmd, arg] = text.slice(1).split(/\s+/);
+    if (cmd === "mode" && (arg === "normal" || arg === "multi")) await setMode(arg);
+    else if (cmd === "stop") await api("/api/node/root/stop", {});
+    else if (cmd === "usage") ctx.showTab("usage");
+    else if (cmd === "files") ctx.showTab("files");
+    else if (cmd === "diff") ctx.showTab("diff");
+    else ctx.toast("/mode normal|multi  /stop  /usage  /files  /diff", false);
+  };
+  const setMode = async (mode) => {
+    try {
+      await api("/api/session/mode", { mode });
+      await ctx.refresh();
+    } catch (error) {
+      ctx.toast(error.message, true);
+    }
+  };
   const form = el("form", { class: "composer", onsubmit: async (e) => {
     e.preventDefault();
     const text = input.value.trim();
     if (!text || readOnly) return;
     input.value = "";
     autosize();
+    if (text.startsWith("/")) return void slash(text).catch((error) => ctx.toast(error.message, true));
     try {
       await api("/api/chat", { text });
     } catch (error) {
@@ -34,10 +52,17 @@ export function renderSession(root, ctx) {
     }
   });
 
+  const modeBox = el("span", { class: "mode-switch", title: "通常: 1体のエージェントと普通に会話 / マルチ: 組織で分担" });
+  const drawMode = () => {
+    const current = store.mode ?? meta?.mode ?? "multi";
+    modeBox.replaceChildren(
+      el("button", { type: "button", class: current === "normal" ? "on" : "", disabled: readOnly, onclick: () => current !== "normal" && setMode("normal") }, "通常"),
+      el("button", { type: "button", class: current === "multi" ? "on" : "", disabled: readOnly, onclick: () => current !== "multi" && setMode("multi") }, "マルチ"));
+  };
   const head = el("div", { class: "session-head" },
     el("span", { class: "title" }, meta?.name ?? "セッション"),
     el("span", { class: "muted small" }, meta?.repoDir ?? ""),
-    el("span", { class: "grow" }), busyChip, stats,
+    el("span", { class: "grow" }), modeBox, busyChip, stats,
     el("button", { class: "small", onclick: () => ctx.toggleSide() }, "グラフ / 詳細"),
     readOnly && meta?.id ? el("button", { class: "small", onclick: async () => {
       try {
@@ -63,6 +88,7 @@ export function renderSession(root, ctx) {
     busyChip.textContent = store.rootBusy ? "作業中" : readOnly ? "" : "待機中";
     busyChip.classList.toggle("ok", store.rootBusy);
     stop.hidden = !store.rootBusy || readOnly;
+    drawMode();
     const stick = timeline.scrollTop + timeline.clientHeight >= timeline.scrollHeight - 40;
     const items = store.timeline.map((entry) => renderEntry(entry, store, ctx, readOnly)).filter(Boolean);
     if (store.rootBusy) items.push(el("div", { class: "thinking busy" }, "作業中"));
@@ -80,7 +106,9 @@ export function renderSession(root, ctx) {
 function renderEntry(entry, store, ctx, readOnly) {
   switch (entry.kind) {
     case "user": return el("div", { class: "msg user" }, entry.text);
-    case "assistant": return el("div", { class: "msg assistant" }, entry.text);
+    case "assistant":
+      return el("div", { class: "msg assistant" }, renderMarkdown(entry.text),
+        el("div", { class: "msg-actions" }, el("button", { class: "small", type: "button", onclick: async (e) => { const ok = await copyText(entry.text); e.target.textContent = ok ? "コピーしました" : "失敗"; setTimeout(() => { e.target.textContent = "コピー"; }, 1500); } }, "コピー")));
     case "error": return el("div", { class: "msg error" }, entry.text);
     case "thinking": return el("div", { class: "thinking" }, entry.text);
     case "activity":
@@ -92,6 +120,7 @@ function renderEntry(entry, store, ctx, readOnly) {
         el("strong", {}, "承認が必要です"),
         el("pre", {}, approval.description),
         readOnly ? null : el("div", { class: "row" },
+          el("button", { onclick: () => ctx.openDiff((/Merge (\S+)/.exec(approval.description) ?? [])[1] ?? approval.nodeId) }, "差分を見る"),
           el("button", { class: "primary", onclick: () => api(`/api/approval/${approval.id}`, { approved: true }).catch((e) => ctx.toast(e.message, true)) }, "承認して統合"),
           el("button", { onclick: () => api(`/api/approval/${approval.id}`, { approved: false }).catch((e) => ctx.toast(e.message, true)) }, "却下")));
     }
